@@ -161,7 +161,35 @@ function useToast() {
   return { msg, show: setMsg }
 }
 
+function runSummary(run: Any): string | null {
+  const d = run.resultData
+  if (run.status === 'failed') {
+    const err = [...(run.logs ?? [])].reverse().find((l: string) => /error|failed|rejected/i.test(l))
+    return err ? `Failed: ${err.replace(/^.*?(Error:|error:)/i, '').slice(0, 140)}` : 'Failed'
+  }
+  if (!d) return null
+  if (run.workflow === 'listing') {
+    if (!d.listed) return `Rejected: ${d.reason}`
+    const fxText = d.currency === 'USD' ? '' : `, ${d.currency}/USD ${fx(d.fxRateE8)} from Chainlink`
+    return `Listed ${d.docNumber}: grade ${d.grade}, ${pct(d.aprBps)} APR, ${usd(d.target)} advance${fxText}`
+  }
+  if (run.handler === 'verify-lender') return d.verified ? `KYC verified: ${d.lenderId} (${d.level})` : `KYC not approved: ${d.lenderId}`
+  if (run.handler === 'credit-fiat-deposit')
+    return `Credited ${usd(d.stablecoins, 2)} for ${d.fiat}; on-ramp rate ${fx(d.providerRate)} vs Chainlink ${fx(d.chainlinkRate)}`
+  if (run.handler === 'disburse-on-funded') return d.disbursed ? `Paid ${usd(d.amount)} to the business (${d.payoutRef})` : `Skipped: ${d.reason}`
+  if (run.handler === 'confirm-repayment') return `Repayment of ${usd(d.amount, 2)} confirmed by the collection bank and the payment processor`
+  if (run.handler === 'redeem-fiat-lenders')
+    return d.redeemed?.length ? `Paid back to bank: ${d.redeemed.map((r: Any) => `${r.lender} ${usd(r.payout, 2)} (${r.payoutRef})`).join(', ')}` : 'No bank-transfer lenders to repay'
+  if (run.workflow === 'monitor') {
+    const r = d.reconciliation
+    const changes = (d.statusChanges ?? []).map((c: Any) => `loan ${c.loanId} ${c.status}, business frozen`).join('; ')
+    return `Reconciliation ${r?.ok ? 'passed' : 'FAILED, funding paused'}${changes ? ` · ${changes}` : ''}`
+  }
+  return null
+}
+
 function RunLine({ run, config }: { run: Any; config: Any }) {
+  const summary = runSummary(run)
   const dur = run.startedAt && run.finishedAt ? `${((new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000).toFixed(0)}s` : ''
   return (
     <details className="run">
@@ -172,6 +200,7 @@ function RunLine({ run, config }: { run: Any; config: Any }) {
           <div className="small muted">
             {run.trigger === 'evm-log' ? 'EVM log trigger' : run.trigger === 'cron' ? 'Cron trigger' : 'HTTP trigger'} · {run.input.length > 70 ? `${run.input.slice(0, 70)}…` : run.input}
           </div>
+          {summary ? <div className={`small ${run.status === 'failed' ? '' : ''}`} style={{ marginTop: 3, color: run.status === 'failed' ? 'var(--stop)' : 'var(--ink)' }}>{summary}</div> : null}
         </span>
         <span className="small muted" style={{ textAlign: 'right' }}>
           {run.status === 'running' ? 'running…' : run.status === 'queued' ? 'queued' : `${run.status} ${dur}`}
@@ -310,7 +339,9 @@ function LoanDetail({ id, live, go, toast }: { id: number; live: Live; go: (p: s
   const ccy = ccyOf(loan.currency)
   const remaining = BigInt(loan.target) - BigInt(loan.funded)
   const fundings = (live.state?.fundings ?? []).filter((f: Any) => Number(f.loanId) === id)
-  const loanRuns = live.runs.filter((r) => r.input.includes(`"loanId":${id}`) || r.input.includes(loan.ref) || (intent && r.input.includes(intent.reference)))
+  const loanRuns = live.runs.filter(
+    (r) => r.loanId === id || r.input.includes(`"loanId":${id}`) || r.input.includes(loan.ref) || (intent && r.input.includes(intent.reference)),
+  )
   const interest = (BigInt(loan.target) * BigInt(loan.aprBps) * BigInt(loan.tenorDays)) / (10_000n * 365n)
   const ben = live.seed?.lenders.find((l: Any) => l.id === 'lender-ben')
   const ana = live.seed?.lenders.find((l: Any) => l.id === 'lender-ana')

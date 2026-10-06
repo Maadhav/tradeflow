@@ -8,3 +8,4 @@ services/rails/data/
 *.wasm
 .DS_Store
 .secrets/
+demo/out/

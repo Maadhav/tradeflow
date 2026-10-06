@@ -449,7 +449,7 @@ const server = Bun.serve({
         state.bankCredits.push({ reference, amountMinor: i.amountMinor, currency: i.currency, payer: lender.name, valueDate: nowIso(), kind: 'deposit' })
         persist()
         broadcast('rails', { kind: 'deposit', intent: i })
-        const run = await bridge.enqueue({ ...WF.fiatFunding, httpPayload: { reference } })
+        const run = await bridge.enqueue({ ...WF.fiatFunding, httpPayload: { reference }, loanId: i.loanId })
         if (run.status === 'success') i.status = 'credited'
         persist()
         return json({ intent: i, run })
@@ -473,7 +473,7 @@ const server = Bun.serve({
         const mintTx = await chain.onRampMint(BigInt(amountMinor) * 10_000n)
         persist()
         broadcast('rails', { kind: 'repayment', reference, amountMinor, mintTx })
-        const run = await bridge.enqueue({ ...WF.repayment, httpPayload: { loanId, reference } })
+        const run = await bridge.enqueue({ ...WF.repayment, httpPayload: { loanId, reference }, loanId })
         return json({ reference, amountMinor, mintTx, run })
       },
     },

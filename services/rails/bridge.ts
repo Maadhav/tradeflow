@@ -14,6 +14,8 @@ export type WorkflowRun = {
   finishedAt?: string
   txHashes: string[]
   result?: string
+  resultData?: Record<string, any>
+  loanId?: number
   logs: string[]
 }
 
@@ -25,6 +27,7 @@ export type RunRequest = {
   httpPayload?: unknown
   evmTxHash?: string
   evmEventIndex?: number
+  loanId?: number
 }
 
 type BridgeOptions = {
@@ -52,6 +55,7 @@ export function makeBridge(opts: BridgeOptions, runs: WorkflowRun[], persist: ()
       queuedAt: new Date().toISOString(),
       txHashes: [],
       logs: [],
+      loanId: req.loanId,
     }
     runs.unshift(run)
     if (runs.length > 200) runs.length = 200
@@ -110,8 +114,17 @@ export function makeBridge(opts: BridgeOptions, runs: WorkflowRun[], persist: ()
     run.txHashes = [...new Set([...text.matchAll(/0x[0-9a-fA-F]{64}/g)].map((m) => m[0]))].filter(
       (h) => h !== req.evmTxHash,
     )
-    const resultLine = run.logs.findLast((l) => /Workflow Simulation Result|result/i.test(l))
-    run.result = resultLine
+    const at = run.logs.findIndex((l) => l.includes('Workflow Simulation Result'))
+    if (at >= 0 && run.logs[at + 1]) {
+      run.result = run.logs[at + 1]
+      try {
+        let v: unknown = JSON.parse(run.logs[at + 1])
+        if (typeof v === 'string') v = JSON.parse(v)
+        run.resultData = v as Record<string, any>
+        const id = Number((v as any)?.loanId)
+        if (Number.isFinite(id) && id > 0) run.loanId = id
+      } catch {}
+    }
     run.status = code === 0 && !/✗|error|failed/i.test(run.logs.slice(-5).join(' ')) ? 'success' : 'failed'
     run.finishedAt = new Date().toISOString()
   }
