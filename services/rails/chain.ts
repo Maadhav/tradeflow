@@ -8,7 +8,6 @@ import {
   parseAbi,
   type Address,
   type Hash,
-  type Log,
 } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { sepolia } from 'viem/chains'
@@ -107,5 +106,3 @@ export function makeChain(rpcUrl: string, deployment: Deployment, operatorKey: `
   return { chain, publicClient, operatorWallet, walletFor, send, onRampMint, readLoan, marketSnapshot, eventIndexIn }
 }
 
-export type ChainApi = ReturnType<typeof makeChain>
-export type MarketLog = Log

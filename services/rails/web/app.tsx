@@ -1,23 +1,32 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
 // ---------------------------------------------------------------------------
-// Data
+// Formatting
 // ---------------------------------------------------------------------------
 
 type Any = any
-const STATUS = ['None', 'Listed', 'Funded', 'Disbursed', 'Repaid', 'Late', 'Defaulted']
-const ASSET = ['Invoice advance', 'Bill of lading', 'Equipment finance', 'Working capital']
-const GRADE = ['-', 'A', 'B', 'C', 'D', 'E']
-
-const usd = (v: string | number | bigint | undefined, digits = 0) => {
-  const n = Number(BigInt(v ?? 0)) / 1e6
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: digits, minimumFractionDigits: digits })
+const STATUS: Record<number, { label: string; tone: string }> = {
+  1: { label: 'Open', tone: 'open' },
+  2: { label: 'Funded', tone: 'good' },
+  3: { label: 'Active', tone: 'good' },
+  4: { label: 'Repaid', tone: 'good' },
+  5: { label: 'Late', tone: 'warn' },
+  6: { label: 'Defaulted', tone: 'bad' },
 }
-const money = (minor: number | string, ccy: string) =>
-  (Number(minor) / 100).toLocaleString('en-US', { style: 'currency', currency: ccy, maximumFractionDigits: 0 })
-const pct = (bps: number) => `${(bps / 100).toFixed(1)}%`
-const fx = (e8: string | number) => (Number(e8) / 1e8).toFixed(4)
+const ASSET = ['Invoice advance', 'Bill of lading', 'Equipment finance', 'Working capital']
+const GRADE = ['', 'A', 'B', 'C', 'D', 'E']
+const COUNTRY: Record<string, string> = {
+  CO: 'Colombia', DE: 'Germany', SG: 'Singapore', US: 'United States', MX: 'Mexico', AE: 'UAE', GB: 'United Kingdom', ES: 'Spain',
+}
+
+const usd = (v: string | number | bigint | undefined, digits = 0) =>
+  (Number(BigInt(v ?? 0)) / 1e6).toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: digits, maximumFractionDigits: digits })
+const money = (minor: number | string, ccy: string, digits = 0) =>
+  (Number(minor) / 100).toLocaleString('en-US', { style: 'currency', currency: ccy, minimumFractionDigits: digits, maximumFractionDigits: digits })
+const days = (n: number) => `${n} day${n === 1 ? '' : 's'}`
+const pct = (bps: number) => `${(bps / 100).toFixed(bps % 100 === 0 ? 0 : 1)}%`
+const rate = (e8: string | number) => (Number(e8) / 1e8).toFixed(4)
 const ccyOf = (hex: string) => {
   try {
     return hex.slice(2).match(/../g)!.map((b) => String.fromCharCode(parseInt(b, 16))).join('')
@@ -25,21 +34,26 @@ const ccyOf = (hex: string) => {
     return 'USD'
   }
 }
-const short = (h?: string) => (h ? `${h.slice(0, 8)}…${h.slice(-6)}` : '')
+const short = (h?: string) => (h ? `${h.slice(0, 6)}…${h.slice(-4)}` : '')
 const ago = (iso?: string) => {
   if (!iso) return ''
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000)
-  if (s < 60) return `${Math.floor(s)}s ago`
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`
-  return `${Math.floor(s / 3600)}h ago`
+  if (s < 60) return 'just now'
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`
+  return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
 }
 
 async function api<T = Any>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, body === undefined ? undefined : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
   const data = await res.json()
-  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
+  if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`)
   return data
 }
+
+// ---------------------------------------------------------------------------
+// Live data
+// ---------------------------------------------------------------------------
 
 function useLive() {
   const [state, setState] = useState<Any>(null)
@@ -59,24 +73,25 @@ function useLive() {
     api('/api/seed').then(setSeed)
     api('/api/config').then(setConfig)
     refresh()
-    const t = setInterval(refresh, 5000)
+    const t = setInterval(refresh, 6000)
     let ws: WebSocket | undefined
+    let closed = false
     const connect = () => {
       ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`)
       ws.onmessage = (m) => {
         const msg = JSON.parse(m.data)
         if (msg.type === 'run') {
-          setRuns((prev) => {
-            const next = prev.filter((x) => x.id !== msg.data.id)
-            return [msg.data, ...next].sort((a, b) => b.id - a.id)
-          })
+          setRuns((prev) => [msg.data, ...prev.filter((x) => x.id !== msg.data.id)].sort((a, b) => b.id - a.id))
           if (msg.data.status === 'success' || msg.data.status === 'failed') refresh()
         } else refresh()
       }
-      ws.onclose = () => setTimeout(connect, 2000)
+      ws.onclose = () => {
+        if (!closed) setTimeout(connect, 2000)
+      }
     }
     connect()
     return () => {
+      closed = true
       clearInterval(t)
       ws?.close()
     }
@@ -84,15 +99,12 @@ function useLive() {
 
   return { state, runs, seed, config, wallet, refresh }
 }
-
 type Live = ReturnType<typeof useLive>
 
-function docFor(seed: Any, ref: string) {
-  return seed?.documents.find((d: Any) => d.number === ref)
-}
-function bizFor(seed: Any, wallet: string) {
-  return seed?.borrowers.find((b: Any) => b.wallet.toLowerCase() === wallet.toLowerCase())
-}
+const docFor = (live: Live, ref: string) => live.seed?.documents.find((d: Any) => d.number === ref)
+const bizFor = (live: Live, wallet: string) => live.seed?.borrowers.find((b: Any) => b.wallet.toLowerCase() === String(wallet).toLowerCase())
+const lenderFor = (live: Live, wallet: string) => live.seed?.lenders.find((l: Any) => l.wallet.toLowerCase() === String(wallet).toLowerCase())
+const dueOf = (loan: Any) => BigInt(loan.target) + (BigInt(loan.target) * BigInt(loan.aprBps) * BigInt(loan.tenorDays)) / (10_000n * 365n)
 
 // ---------------------------------------------------------------------------
 // Routing
@@ -113,7 +125,8 @@ function usePath() {
   return { path, go }
 }
 
-function Link({ to, go, children, className }: { to: string; go: (p: string) => void; children: React.ReactNode; className?: string }) {
+type Go = (p: string) => void
+function Link({ to, go, className, children }: { to: string; go: Go; className?: string; children: React.ReactNode }) {
   return (
     <a
       href={to}
@@ -130,14 +143,44 @@ function Link({ to, go, children, className }: { to: string; go: (p: string) => 
 }
 
 // ---------------------------------------------------------------------------
-// Shared bits
+// Shared components
 // ---------------------------------------------------------------------------
 
-function Hash({ h, config }: { h?: string; config: Any }) {
+function useToast() {
+  const [toast, setToast] = useState<{ text: string; bad?: boolean } | null>(null)
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(null), 6000)
+    return () => clearTimeout(t)
+  }, [toast])
+  return { toast, notify: (text: string, bad = false) => setToast({ text, bad }) }
+}
+type Notify = (text: string, bad?: boolean) => void
+
+function useAction(live: Live, notify: Notify) {
+  const [busy, setBusy] = useState('')
+  const run = async (key: string, fn: () => Promise<unknown>, done?: string) => {
+    setBusy(key)
+    try {
+      await fn()
+      if (done) notify(done)
+      await live.refresh()
+      return true
+    } catch (e) {
+      notify((e as Error).message, true)
+      return false
+    } finally {
+      setBusy('')
+    }
+  }
+  return { busy, run }
+}
+
+function Tx({ h, live }: { h?: string; live: Live }) {
   if (!h) return null
-  const url = config?.explorer ? `${config.explorer}/tx/${h}` : undefined
-  return url ? (
-    <a className="hash" href={url} target="_blank" rel="noreferrer">
+  const base = live.config?.explorer
+  return base ? (
+    <a className="hash" href={`${base}/tx/${h}`} target="_blank" rel="noreferrer">
       {short(h)}
     </a>
   ) : (
@@ -145,75 +188,128 @@ function Hash({ h, config }: { h?: string; config: Any }) {
   )
 }
 
-function StatusChip({ s }: { s: number }) {
-  const name = STATUS[s] ?? 'Unknown'
-  const cls = s === 1 ? 'blue' : s === 2 || s === 3 ? 'green' : s === 4 ? 'green' : s === 5 ? 'warn' : s === 6 ? 'stop' : ''
-  return <span className={`chip ${cls}`}>{name}</span>
+function Status({ s }: { s: number }) {
+  const st = STATUS[s]
+  return st ? <span className={`tag ${st.tone}`}>{st.label}</span> : null
 }
 
-function useToast() {
-  const [msg, setMsg] = useState<string | null>(null)
-  useEffect(() => {
-    if (!msg) return
-    const t = setTimeout(() => setMsg(null), 6000)
-    return () => clearTimeout(t)
-  }, [msg])
-  return { msg, show: setMsg }
+function Lane({ from, to, progress, status }: { from?: string; to?: string; progress: number; status: number }) {
+  const p = Math.max(0, Math.min(100, progress))
+  const cls = status === 4 ? 'done' : status >= 5 ? 'late' : ''
+  return (
+    <div className="lane" aria-label={`${COUNTRY[from ?? ''] ?? from} to ${COUNTRY[to ?? ''] ?? to}, ${p.toFixed(0)}% funded`}>
+      <div className="port">
+        {from}
+        <small>{COUNTRY[from ?? ''] ?? ''}</small>
+      </div>
+      <div className={`route ${cls}`}>
+        <div className="sailed" style={{ width: `${p}%` }} />
+        <div className="ship" style={{ left: `${p}%` }} />
+      </div>
+      <div className="port">
+        {to}
+        <small>{COUNTRY[to ?? ''] ?? ''}</small>
+      </div>
+    </div>
+  )
 }
 
-function runSummary(run: Any): string | null {
+const RUN_NAME: Record<string, string> = {
+  'verify-and-list': 'Document review',
+  'verify-lender': 'Lender verification',
+  'credit-fiat-deposit': 'Deposit verification',
+  'disburse-on-funded': 'Payout to business',
+  'confirm-repayment': 'Repayment confirmation',
+  'redeem-fiat-lenders': 'Payout to lenders',
+  'watch-and-reconcile': 'Risk and reserve check',
+}
+
+function runSummary(run: Any, live: Live): string | null {
   const d = run.resultData
   if (run.status === 'failed') {
-    const err = [...(run.logs ?? [])].reverse().find((l: string) => /error|failed|rejected/i.test(l))
-    return err ? `Failed: ${err.replace(/^.*?(Error:|error:)/i, '').slice(0, 140)}` : 'Failed'
+    const err = [...(run.logs ?? [])].reverse().find((l: string) => /error|rejected|failed/i.test(l) && !/Simulation/i.test(l))
+    return err ? err.replace(/^.*?(Error:|error:)\s*/i, '').slice(0, 160) : 'Did not complete'
   }
-  if (!d) return null
-  if (run.workflow === 'listing') {
-    if (!d.listed) return `Rejected: ${d.reason}`
-    const fxText = d.currency === 'USD' ? '' : `, ${d.currency}/USD ${fx(d.fxRateE8)} from Chainlink`
-    return `Listed ${d.docNumber}: grade ${d.grade}, ${pct(d.aprBps)} APR, ${usd(d.target)} advance${fxText}`
-  }
-  if (run.handler === 'verify-lender') return d.verified ? `KYC verified: ${d.lenderId} (${d.level})` : `KYC not approved: ${d.lenderId}`
-  if (run.handler === 'credit-fiat-deposit')
-    return `Credited ${usd(d.stablecoins, 2)} for ${d.fiat}; on-ramp rate ${fx(d.providerRate)} vs Chainlink ${fx(d.chainlinkRate)}`
-  if (run.handler === 'disburse-on-funded') return d.disbursed ? `Paid ${usd(d.amount)} to the business (${d.payoutRef})` : `Skipped: ${d.reason}`
-  if (run.handler === 'confirm-repayment') return `Repayment of ${usd(d.amount, 2)} confirmed by the collection bank and the payment processor`
-  if (run.handler === 'redeem-fiat-lenders')
-    return d.redeemed?.length ? `Paid back to bank: ${d.redeemed.map((r: Any) => `${r.lender} ${usd(r.payout, 2)} (${r.payoutRef})`).join(', ')}` : 'No bank-transfer lenders to repay'
-  if (run.workflow === 'monitor') {
-    const r = d.reconciliation
-    const changes = (d.statusChanges ?? []).map((c: Any) => `loan ${c.loanId} ${c.status}, business frozen`).join('; ')
-    return `Reconciliation ${r?.ok ? 'passed' : 'FAILED, funding paused'}${changes ? ` · ${changes}` : ''}`
+  if (!d) return run.status === 'running' ? 'In progress' : run.status === 'queued' ? 'Waiting to start' : null
+  switch (run.handler) {
+    case 'verify-and-list':
+      if (!d.listed) return `Not approved: ${d.reason}`
+      return `Approved ${d.docNumber}: grade ${d.grade}, ${pct(d.aprBps)} APR, ${usd(d.target)} advance${d.currency === 'USD' ? '' : ` at ${d.currency}/USD ${rate(d.fxRateE8)}`}`
+    case 'verify-lender': {
+      const l = live.seed?.lenders.find((x: Any) => x.id === d.lenderId)
+      return d.verified ? `${l?.name ?? d.lenderId} verified` : `${l?.name ?? d.lenderId} not verified (${d.status})`
+    }
+    case 'credit-fiat-deposit':
+      return `${fiatText(d.fiat)} received, ${usd(d.stablecoins, 2)} credited at ${rate(d.providerRate)} (reference ${rate(d.chainlinkRate)})`
+    case 'disburse-on-funded':
+      return d.disbursed ? `${usd(d.amount)} paid to the business, ${d.payoutRef}` : `Skipped: ${d.reason}`
+    case 'confirm-repayment':
+      return `${usd(d.amount, 2)} from ${d.payer}, matched at the bank and the payment processor`
+    case 'redeem-fiat-lenders':
+      return d.redeemed?.length
+        ? d.redeemed.map((r: Any) => `${live.seed?.lenders.find((x: Any) => x.id === r.lender)?.name ?? r.lender} paid ${usd(r.payout, 2)}`).join(', ')
+        : 'No bank-transfer lenders on this loan'
+    case 'watch-and-reconcile': {
+      const changes = (d.statusChanges ?? []).map((c: Any) => `loan ${c.loanId} ${c.status}`).join(', ')
+      return `${d.reconciliation?.ok ? 'Reserves match' : 'Reserve mismatch, funding paused'}${changes ? `; ${changes}, business frozen` : ''}`
+    }
   }
   return null
 }
 
-function RunLine({ run, config }: { run: Any; config: Any }) {
-  const summary = runSummary(run)
-  const dur = run.startedAt && run.finishedAt ? `${((new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000).toFixed(0)}s` : ''
+/** Dot colour reflects the outcome, not just that the run finished. */
+function runTone(run: Any): string {
+  if (run.status !== 'success') return run.status
+  const d = run.resultData ?? {}
+  if (run.handler === 'watch-and-reconcile') return d.reconciliation?.ok === false ? 'bad' : d.statusChanges?.length ? 'warn' : 'success'
+  if (run.handler === 'verify-and-list' && d.listed === false) return 'warn'
+  if (run.handler === 'verify-lender' && d.verified === false) return 'warn'
+  return 'success'
+}
+
+const fiatText = (s: string) => {
+  const m = /^(\d+(?:\.\d+)?) (EUR|USD)$/.exec(s ?? '')
+  return m ? money(Math.round(Number(m[1]) * 100), m[2]) : s
+}
+
+/** Only the workflow's own log lines and its result, without tool chatter. */
+function runDetail(run: Any): string {
+  const lines = (run.logs ?? [])
+    .filter((l: string) => l.includes('[USER LOG]'))
+    .map((l: string) => l.replace(/^.*\[USER LOG\]\s*/, ''))
+  const result = run.resultData ? JSON.stringify(run.resultData, null, 2) : ''
+  return [...lines, result].filter(Boolean).join('\n')
+}
+
+function Activity({ runs, live, empty }: { runs: Any[]; live: Live; empty: string }) {
+  if (runs.length === 0) return <div className="empty">{empty}</div>
   return (
-    <details className="run">
-      <summary>
-        <span className={`status-dot s-${run.status}`} title={run.status} />
-        <span>
-          <span className="wf">{run.workflow}</span> <span className="muted">· {run.handler}</span>
-          <div className="small muted">
-            {run.trigger === 'evm-log' ? 'EVM log trigger' : run.trigger === 'cron' ? 'Cron trigger' : 'HTTP trigger'} · {run.input.length > 70 ? `${run.input.slice(0, 70)}…` : run.input}
-          </div>
-          {summary ? <div className={`small ${run.status === 'failed' ? '' : ''}`} style={{ marginTop: 3, color: run.status === 'failed' ? 'var(--stop)' : 'var(--ink)' }}>{summary}</div> : null}
-        </span>
-        <span className="small muted" style={{ textAlign: 'right' }}>
-          {run.status === 'running' ? 'running…' : run.status === 'queued' ? 'queued' : `${run.status} ${dur}`}
-          <div>{ago(run.finishedAt ?? run.startedAt ?? run.queuedAt)}</div>
-          {run.txHashes?.slice(0, 2).map((h: string) => (
-            <div key={h}>
-              <Hash h={h} config={config} />
-            </div>
-          ))}
-        </span>
-      </summary>
-      {run.logs?.length ? <pre>{run.logs.join('\n')}</pre> : null}
-    </details>
+    <div className="activity">
+      {runs.map((run) => {
+        const summary = runSummary(run, live)
+        const tx = run.resultData?.tx ?? run.resultData?.reconciliation?.tx ?? run.resultData?.redeemed?.[0]?.tx
+        return (
+          <details key={run.id} className="event">
+            <summary>
+              <span className={`dot ${runTone(run)}`} aria-label={run.status} />
+              <span>
+                <div className="name">{RUN_NAME[run.handler] ?? run.handler}</div>
+                {summary ? <div className={`sum ${run.status === 'failed' ? 'bad' : ''}`}>{summary}</div> : null}
+              </span>
+              <span className="when">
+                {ago(run.finishedAt ?? run.startedAt ?? run.queuedAt)}
+                {tx ? (
+                  <div>
+                    <Tx h={tx} live={live} />
+                  </div>
+                ) : null}
+              </span>
+            </summary>
+            {runDetail(run) ? <pre>{runDetail(run)}</pre> : null}
+          </details>
+        )
+      })}
+    </div>
   )
 }
 
@@ -221,406 +317,487 @@ function RunLine({ run, config }: { run: Any; config: Any }) {
 // Marketplace
 // ---------------------------------------------------------------------------
 
-function LoanCard({ loan, live, go }: { loan: Any; live: Live; go: (p: string) => void }) {
-  const doc = docFor(live.seed, loan.ref)
-  const biz = bizFor(live.seed, loan.borrower)
+function LoanCard({ loan, live, go }: { loan: Any; live: Live; go: Go }) {
+  const doc = docFor(live, loan.ref)
+  const biz = bizFor(live, loan.borrower)
   const progress = Number((BigInt(loan.funded) * 1000n) / BigInt(loan.target || 1)) / 10
   return (
-    <Link to={`/loans/${loan.id}`} go={go} className="card loan">
-      <div className="row between">
-        <span className="chip">{ASSET[loan.assetType]}</span>
-        <StatusChip s={loan.status} />
+    <Link to={`/loans/${loan.id}`} go={go} className="loan">
+      <div className="loan-top">
+        <span className="kind">{ASSET[loan.assetType]}</span>
+        <Status s={loan.status} />
       </div>
-      <div className="row" style={{ alignItems: 'flex-start', flexWrap: 'nowrap' }}>
-        <div className="grade" title="Risk grade from the confidential credit check">{GRADE[loan.riskGrade]}</div>
+      <div className="row" style={{ alignItems: 'flex-start', flexWrap: 'nowrap', gap: 12 }}>
+        <span className="grade" title="Risk grade">
+          {GRADE[loan.riskGrade]}
+        </span>
         <div>
-          <div className="title">{doc?.title ?? loan.ref}</div>
-          <div className="small muted">
-            {biz?.name ?? short(loan.borrower)} · {biz?.country} → {doc?.buyerCountry}
-          </div>
+          <div className="loan-title">{doc?.title ?? loan.ref}</div>
+          <div className="loan-who">{biz?.name}</div>
         </div>
       </div>
-      <div className="terms">
-        <div className="term">
-          <div className="k">APR</div>
-          <div className="v">{pct(loan.aprBps)}</div>
-        </div>
-        <div className="term">
-          <div className="k">Term</div>
-          <div className="v">{loan.tenorDays} days</div>
-        </div>
-        <div className="term">
-          <div className="k">Target</div>
-          <div className="v">{usd(loan.target)}</div>
-        </div>
+      <Lane from={biz?.country} to={doc?.buyerCountry} progress={loan.status === 1 ? progress : 100} status={loan.status} />
+      <div className="lane-caption">
+        <span>
+          {loan.status === 1
+            ? `${usd(loan.funded)} raised`
+            : loan.status === 4
+              ? `Repaid ${usd(loan.repaidAmount)}`
+              : loan.status >= 5
+                ? 'Payment overdue'
+                : loan.status === 3
+                  ? `Due ${usd(dueOf(loan))}`
+                  : 'Paying out'}
+        </span>
+        <span>{loan.status === 1 ? `${progress.toFixed(0)}% funded` : ''}</span>
       </div>
-      <div className="stack" style={{ gap: 6 }}>
-        <div className="bar">
-          <span style={{ width: `${Math.min(progress, 100)}%` }} />
+      <dl className="terms" style={{ margin: 0 }}>
+        <div>
+          <dt>APR</dt>
+          <dd>{pct(loan.aprBps)}</dd>
         </div>
-        <div className="row between small">
-          <span className="muted">{usd(loan.funded)} raised</span>
-          <span className="muted">{progress.toFixed(0)}%</span>
+        <div>
+          <dt>Term</dt>
+          <dd>{days(loan.tenorDays)}</dd>
         </div>
-      </div>
-      <div className="verified">
-        <span className="dot" /> Verified by Chainlink CRE · {loan.ref}
-      </div>
+        <div>
+          <dt>Advance</dt>
+          <dd>{usd(loan.target)}</dd>
+        </div>
+      </dl>
     </Link>
   )
 }
 
-function Marketplace({ live, go }: { live: Live; go: (p: string) => void }) {
-  const loans = live.state?.loans ?? []
+function Marketplace({ live, go }: { live: Live; go: Go }) {
+  const loans: Any[] = live.state?.loans ?? []
   const snap = live.state?.snapshot
-  const financed = loans.filter((l: Any) => l.status >= 3).reduce((s: bigint, l: Any) => s + BigInt(l.target), 0n)
-  const verifiedRuns = live.runs.filter((r) => r.status === 'success').length
+  const financed = loans.filter((l) => l.status >= 3).reduce((s, l) => s + BigInt(l.target), 0n)
+  const repaid = loans.filter((l) => l.status === 4).reduce((s, l) => s + BigInt(l.repaidAmount), 0n)
+  const open = loans.filter((l) => l.status === 1)
+  const ordered = [...open.slice().reverse(), ...loans.filter((l) => l.status !== 1).reverse()]
   return (
     <>
-      <h1>Real-world business credit, checked by Chainlink CRE.</h1>
-      <p className="lead">
-        Exporters, shippers and manufacturers get paid now instead of waiting 60 to 180 days. Lenders fund from a bank account or with
-        stablecoins. Every document, deposit, payout and repayment is verified by a Chainlink CRE workflow before it changes anything onchain.
+      <h1 className="display">Fund the goods already on their way.</h1>
+      <p className="lede">
+        Short-term financing for verified invoices and shipping documents. Lend from your bank account or in USDC, and get paid back when the buyer pays.
       </p>
-      <div className="grid cols-4">
-        <div className="card kpi">
-          <div className="label">Financed to businesses</div>
-          <div className="value">{usd(financed)}</div>
+      <div className="ledger">
+        <div>
+          <b>{usd(financed)}</b>
+          <span>advanced to businesses</span>
         </div>
-        <div className="card kpi">
-          <div className="label">Open for funding</div>
-          <div className="value">{loans.filter((l: Any) => l.status === 1).length}</div>
+        <div>
+          <b>{open.length}</b>
+          <span>{open.length === 1 ? 'request open for funding' : 'requests open for funding'}</span>
         </div>
-        <div className="card kpi">
-          <div className="label">Fiat funded via on-ramp</div>
-          <div className="value">{usd(snap?.totalFiatIn)}</div>
-        </div>
-        <div className="card kpi">
-          <div className="label">CRE workflow runs</div>
-          <div className="value">{verifiedRuns}</div>
+        <div>
+          <b>{usd(repaid)}</b>
+          <span>repaid to lenders</span>
         </div>
       </div>
       {snap?.fundingPaused ? (
-        <div className="banner stop section">
-          Funding is paused: the last CRE reconciliation found a mismatch between bank, on-ramp and onchain records.
+        <div className="panel notice bad" style={{ marginBottom: 20, borderRadius: 'var(--r-md)' }}>
+          New funding is paused while a reserve check is reviewed.
         </div>
       ) : null}
-      <div className="section row between">
-        <h2 style={{ margin: 0 }}>Financing requests</h2>
-        <Link to="/business" go={go} className="btn ghost">
-          Submit a document
-        </Link>
+      <div className="page-head" style={{ marginBottom: 16 }}>
+        <h2>Financing requests</h2>
       </div>
-      <div className="grid cols-3 section" style={{ marginTop: 12 }}>
-        {loans.length === 0 ? (
-          <div className="card empty">No financing requests yet. Submit a document from the Business page.</div>
-        ) : (
-          [...loans].reverse().map((l: Any) => <LoanCard key={l.id} loan={l} live={live} go={go} />)
-        )}
-      </div>
+      {loans.length === 0 ? (
+        <div className="panel empty">
+          No financing requests yet.{' '}
+          <Link to="/business" go={go}>
+            Request financing for a document
+          </Link>
+          .
+        </div>
+      ) : (
+        <div className="board">
+          {ordered.map((l) => (
+            <LoanCard key={l.id} loan={l} live={live} go={go} />
+          ))}
+        </div>
+      )}
     </>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Loan detail
+// Loan page
 // ---------------------------------------------------------------------------
 
-function LoanDetail({ id, live, go, toast }: { id: number; live: Live; go: (p: string) => void; toast: (m: string) => void }) {
-  const loan = live.state?.loans?.find((l: Any) => l.id === id)
-  const [tab, setTab] = useState<'fiat' | 'crypto'>('fiat')
-  const [amount, setAmount] = useState('')
-  const [busy, setBusy] = useState('')
-  const [intent, setIntent] = useState<Any>(null)
-  if (!loan) return <div className="card empty">Loading loan {id}…</div>
-
-  const doc = docFor(live.seed, loan.ref)
-  const biz = bizFor(live.seed, loan.borrower)
-  const ccy = ccyOf(loan.currency)
-  const remaining = BigInt(loan.target) - BigInt(loan.funded)
-  const fundings = (live.state?.fundings ?? []).filter((f: Any) => Number(f.loanId) === id)
-  const loanRuns = live.runs.filter(
-    (r) => r.loanId === id || r.input.includes(`"loanId":${id}`) || r.input.includes(loan.ref) || (intent && r.input.includes(intent.reference)),
-  )
-  const interest = (BigInt(loan.target) * BigInt(loan.aprBps) * BigInt(loan.tenorDays)) / (10_000n * 365n)
-  const ben = live.seed?.lenders.find((l: Any) => l.id === 'lender-ben')
+function BankTransfer({ loan, live, notify }: { loan: Any; live: Live; notify: Notify }) {
   const ana = live.seed?.lenders.find((l: Any) => l.id === 'lender-ana')
+  const { busy, run } = useAction(live, notify)
+  const [amount, setAmount] = useState('')
+  const [reference, setReference] = useState<string | null>(null)
+  const intent = (live.state?.intents ?? []).find((i: Any) => i.reference === reference)
+  const depositRun = live.runs.find((r) => r.handler === 'credit-fiat-deposit' && r.input.includes(reference ?? '~'))
 
-  const act = async (label: string, fn: () => Promise<unknown>, done?: string) => {
-    setBusy(label)
-    try {
-      await fn()
-      if (done) toast(done)
-      await live.refresh()
-    } catch (e) {
-      toast(`Failed: ${(e as Error).message}`)
-    } finally {
-      setBusy('')
-    }
+  if (!reference || !intent) {
+    return (
+      <div className="stack">
+        <div className="small muted">Paying from {ana?.name}'s EUR account ending {String(ana?.bankAccount ?? '').slice(-4)}.</div>
+        <label className="field">
+          Amount
+          <div className="input">
+            <span>EUR</span>
+            <input id="fiat-amount" inputMode="decimal" placeholder="0" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ''))} />
+          </div>
+        </label>
+        <button
+          className="btn primary block"
+          disabled={!!busy || !Number(amount)}
+          onClick={() =>
+            run('intent', async () => {
+              const r = await api('/api/onramp/intent', { lenderId: 'lender-ana', loanId: loan.id, amountMinor: Math.round(Number(amount) * 100), currency: 'EUR' })
+              setReference(r.intent.reference)
+            })
+          }
+        >
+          Get transfer details
+        </button>
+      </div>
+    )
   }
 
+  const received = intent.status !== 'awaiting_funds'
+  const credited = intent.status === 'credited'
+  const verifying = received && !credited && depositRun && depositRun.status !== 'failed'
+  return (
+    <div className="stack">
+      <dl className="instructions" style={{ margin: 0 }}>
+        <div>
+          <dt>Send</dt>
+          <dd>{money(intent.amountMinor, intent.currency, 2)}</dd>
+        </div>
+        <div>
+          <dt>To</dt>
+          <dd>Tradeflow Client Funds, DE89 3704 0044 0532 0130 00</dd>
+        </div>
+        <div>
+          <dt>Reference</dt>
+          <dd className="code">{intent.reference}</dd>
+        </div>
+      </dl>
+      {!received ? (
+        <button
+          className="btn primary block"
+          disabled={!!busy}
+          onClick={() => run('deposit', () => api('/api/onramp/simulate-deposit', { reference: intent.reference }))}
+        >
+          {busy === 'deposit' ? 'Waiting for your transfer…' : "I've sent the transfer"}
+        </button>
+      ) : null}
+      <ul className="progress-list">
+        <li className={received ? 'done' : busy === 'deposit' ? 'now' : ''}>Transfer received</li>
+        <li className={received ? 'done' : ''}>Converted to USDC{intent.fxRateE8 ? ` at ${rate(intent.fxRateE8)}` : ''}</li>
+        <li className={credited ? 'done' : verifying ? 'now' : ''}>Deposit verified</li>
+        <li className={credited ? 'done' : ''}>{credited ? `${usd(intent.stablecoinAmount, 2)} in loan notes issued` : 'Loan notes issued'}</li>
+      </ul>
+      {credited ? (
+        <button
+          className="btn quiet block"
+          onClick={() => {
+            setReference(null)
+            setAmount('')
+          }}
+        >
+          Make another transfer
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
+function UsdcFunding({ loan, live, notify }: { loan: Any; live: Live; notify: Notify }) {
+  const { busy, run } = useAction(live, notify)
+  const [amount, setAmount] = useState('')
+  const remaining = Number(BigInt(loan.target) - BigInt(loan.funded)) / 1e6
+  const w = live.wallet
+  const kycRunning = live.runs.some((r) => r.handler === 'verify-lender' && (r.status === 'running' || r.status === 'queued'))
+  if (!w) return null
+  return (
+    <div className="stack">
+      <div className="small muted">
+        Wallet {short(w.address)} holds {usd(w.usdc, 2)} USDC.
+      </div>
+      {!w.verified ? (
+        <button className="btn primary block" disabled={!!busy || kycRunning} onClick={() => run('kyc', () => api('/api/lender/onboard', { lenderId: 'lender-ben' }))}>
+          {kycRunning ? 'Verifying your identity…' : 'Verify identity to lend'}
+        </button>
+      ) : (
+        <>
+          <label className="field">
+            Amount
+            <div className="input">
+              <span>USDC</span>
+              <input id="usdc-amount" inputMode="decimal" placeholder={remaining.toLocaleString('en-US')} value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ''))} />
+            </div>
+          </label>
+          <div className="row small" style={{ justifyContent: 'space-between' }}>
+            <span className="muted">{usd(BigInt(loan.target) - BigInt(loan.funded), 2)} left to raise</span>
+            <button className="btn quiet" style={{ padding: '4px 10px' }} onClick={() => setAmount(String(remaining))}>
+              Fund the rest
+            </button>
+          </div>
+          <button
+            className="btn primary block"
+            disabled={!!busy || !Number(amount)}
+            onClick={() =>
+              run('fund', () => api('/api/demo-wallet/fund', { loanId: loan.id, amountUsd: Number(amount) }), `Funded ${usd(Math.round(Number(amount) * 1e6), 2)}`).then(
+                (ok) => ok && setAmount(''),
+              )
+            }
+          >
+            {busy === 'fund' ? 'Funding…' : amount ? `Fund ${usd(Math.round(Number(amount) * 1e6), 2)}` : 'Fund'}
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+
+function LoanPage({ id, live, go, notify }: { id: number; live: Live; go: Go; notify: Notify }) {
+  const loan = live.state?.loans?.find((l: Any) => l.id === id)
+  const [tab, setTab] = useState<'bank' | 'usdc'>('bank')
+  const { busy, run } = useAction(live, notify)
+  if (!live.state) return <div className="empty">Loading…</div>
+  if (!loan)
+    return (
+      <div className="panel empty">
+        This loan does not exist.{' '}
+        <Link to="/" go={go}>
+          Back to the marketplace
+        </Link>
+      </div>
+    )
+
+  const doc = docFor(live, loan.ref)
+  const biz = bizFor(live, loan.borrower)
+  const ccy = ccyOf(loan.currency)
+  const progress = Number((BigInt(loan.funded) * 1000n) / BigInt(loan.target || 1)) / 10
+  const fundings = (live.state.fundings ?? []).filter((f: Any) => Number(f.loanId) === id)
+  const loanRuns = live.runs.filter((r) => r.loanId === id || r.input.includes(loan.ref))
+  const repayment = (live.state.bankCredits ?? []).find((c: Any) => c.kind === 'repayment' && c.reference.startsWith(`PAY-${id}-`))
+  const disbursedPayout = (live.state.payouts ?? []).find((p: Any) => p.kind === 'business' && p.loanId === id)
+  const held = BigInt(live.wallet?.notes?.[String(id)] ?? 0)
+  const claimable = loan.status === 4 && held > 0n ? (held * BigInt(loan.repaidAmount)) / BigInt(loan.target) : 0n
+
   const steps = [
-    { what: 'Document verified and listed', done: loan.status >= 1, detail: `Registry check, sanctions screen and credit grade ${GRADE[loan.riskGrade]} computed inside a TEE` },
-    { what: 'Fully funded', done: loan.status >= 2 && loan.status !== 1, detail: `${usd(loan.funded)} of ${usd(loan.target)}, ${usd(loan.fiatFunded)} by bank transfer` },
-    { what: 'Paid out to the business', done: loan.status >= 3, detail: loan.disbursedAt > 0 ? `Fiat payout confirmed by CRE, stablecoins released to the off-ramp` : 'CRE pays the business when the loan is fully funded' },
-    { what: loan.status === 5 ? 'Overdue: business frozen' : loan.status === 6 ? 'Defaulted' : 'Repaid by the buyer', done: loan.status === 4, fail: loan.status >= 5, detail: loan.status === 4 ? `${usd(loan.repaidAmount, 2)} confirmed by the bank and the payment processor` : `Due ${usd(BigInt(loan.target) + interest, 2)}` },
+    { what: 'Verified and listed', detail: `Document and buyer confirmed, sanctions screened, credit reviewed privately (grade ${GRADE[loan.riskGrade]}).`, done: true },
+    {
+      what: 'Funded by lenders',
+      detail: loan.status === 1 ? `${usd(loan.funded)} of ${usd(loan.target)} raised.` : `${usd(loan.target)} raised, ${usd(loan.fiatFunded)} by bank transfer.`,
+      done: loan.status >= 2,
+    },
+    {
+      what: 'Paid to the business',
+      detail: disbursedPayout ? `${usd(disbursedPayout.amount)} sent to ${biz?.name}, ${disbursedPayout.payoutRef}.` : 'Paid out in local currency as soon as the loan is fully funded.',
+      done: loan.status >= 3,
+    },
+    {
+      what: loan.status === 5 ? 'Payment overdue' : loan.status === 6 ? 'Defaulted' : 'Repaid by the buyer',
+      detail:
+        loan.status === 4
+          ? `${usd(loan.repaidAmount, 2)} received from ${doc?.buyer}.`
+          : loan.status >= 5
+            ? `${doc?.buyer} has not paid. ${biz?.name} cannot raise again until it is settled.`
+            : `${usd(dueOf(loan), 2)} due from ${doc?.buyer} after ${days(loan.tenorDays)}.`,
+      done: loan.status === 4,
+      bad: loan.status >= 5,
+    },
   ]
-  const nowIdx = steps.findIndex((s) => !s.done)
+  const nowIdx = steps.findIndex((s) => !s.done && !s.bad)
 
   return (
     <>
-      <div className="small muted">
+      <div className="crumb">
         <Link to="/" go={go}>
           Marketplace
         </Link>{' '}
-        / {loan.ref}
+        / <span className="code">{loan.ref}</span>
       </div>
-      <div className="row between" style={{ marginTop: 8 }}>
-        <h1 style={{ margin: 0 }}>{doc?.title ?? loan.ref}</h1>
-        <StatusChip s={loan.status} />
-      </div>
-      <p className="lead" style={{ marginTop: 6 }}>
-        {biz?.name} ({biz?.country}) · buyer {doc?.buyer} ({doc?.buyerCountry})
-      </p>
-      <div className="split">
-        <div className="stack" style={{ gap: 14 }}>
-          <div className="card">
-            <div className="grid cols-4" style={{ gap: 10 }}>
-              <div className="kpi">
-                <div className="label">Advance</div>
-                <div className="value">{usd(loan.target)}</div>
-              </div>
-              <div className="kpi">
-                <div className="label">APR</div>
-                <div className="value">{pct(loan.aprBps)}</div>
-              </div>
-              <div className="kpi">
-                <div className="label">Term</div>
-                <div className="value">{loan.tenorDays}d</div>
-              </div>
-              <div className="kpi">
-                <div className="label">Grade</div>
-                <div className="value">{GRADE[loan.riskGrade]}</div>
-              </div>
-            </div>
+      <div className="page-head" style={{ marginBottom: 20 }}>
+        <div>
+          <h1>{doc?.title ?? loan.ref}</h1>
+          <div className="muted" style={{ marginTop: 6 }}>
+            {biz?.name}, selling to {doc?.buyer}
           </div>
-          <div className="card">
-            <h3>What CRE verified</h3>
-            <table>
+        </div>
+        <Status s={loan.status} />
+      </div>
+
+      <div className="split">
+        <div className="stack" style={{ gap: 20 }}>
+          <div className="panel panel-pad">
+            <Lane from={biz?.country} to={doc?.buyerCountry} progress={loan.status === 1 ? progress : 100} status={loan.status} />
+          </div>
+          <dl className="facts" style={{ margin: 0 }}>
+            <div>
+              <dt>Advance</dt>
+              <dd>{usd(loan.target)}</dd>
+            </div>
+            <div>
+              <dt>APR</dt>
+              <dd>{pct(loan.aprBps)}</dd>
+            </div>
+            <div>
+              <dt>Term</dt>
+              <dd>{days(loan.tenorDays)}</dd>
+            </div>
+            <div>
+              <dt>Risk grade</dt>
+              <dd>{GRADE[loan.riskGrade]}</dd>
+            </div>
+          </dl>
+
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Verification</h2>
+              <span className="verified">Documents verified</span>
+            </div>
+            <table className="kv">
               <tbody>
                 <tr>
-                  <td className="muted">Document</td>
+                  <td>Document</td>
                   <td>
-                    {ASSET[loan.assetType]} {loan.ref}, face value {money(loan.faceValueMinor, ccy)}
+                    {ASSET[loan.assetType]} <span className="code">{loan.ref}</span> for {money(loan.faceValueMinor, ccy)}
                   </td>
                 </tr>
                 <tr>
-                  <td className="muted">FX at listing</td>
+                  <td>Buyer</td>
                   <td>
-                    {ccy === 'USD' ? 'USD document, no conversion' : `${ccy}/USD ${fx(loan.fxRateE8)} from the Chainlink Data Feed`}
+                    {doc?.buyer}, {COUNTRY[doc?.buyerCountry] ?? doc?.buyerCountry}. Confirmed with the document registry.
                   </td>
                 </tr>
                 <tr>
-                  <td className="muted">Credit check</td>
-                  <td>Run inside a TEE. Only the grade and terms left the enclave; the credit file never did.</td>
+                  <td>Exchange rate</td>
+                  <td>{ccy === 'USD' ? 'Priced in USD' : `${ccy}/USD ${rate(loan.fxRateE8)} reference rate at listing`}</td>
                 </tr>
                 <tr>
-                  <td className="muted">Document hash</td>
-                  <td className="mono">{short(loan.docHash)}</td>
+                  <td>Credit review</td>
+                  <td>Grade {GRADE[loan.riskGrade]}. Run in a secure enclave: the business's financial data is never shared.</td>
+                </tr>
+                <tr>
+                  <td>Fingerprint</td>
+                  <td className="code">{short(loan.docHash)}</td>
                 </tr>
               </tbody>
             </table>
-          </div>
-          <div className="card">
-            <h3>Lifecycle</h3>
-            <div className="steps">
+          </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Lifecycle</h2>
+            </div>
+            <ol className="steps">
               {steps.map((s, i) => (
-                <div key={s.what} className={`step ${s.fail ? 'fail' : s.done ? 'done' : i === nowIdx ? 'now' : ''}`}>
-                  <span className="mark" />
+                <li key={s.what} className={s.bad ? 'bad' : s.done ? 'done' : i === nowIdx ? 'now' : ''}>
                   <div>
                     <div className="what">{s.what}</div>
                     <div className="detail">{s.detail}</div>
                   </div>
-                </div>
+                </li>
               ))}
+            </ol>
+          </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Lenders</h2>
+              <span className="small muted">{fundings.length}</span>
             </div>
-          </div>
-          <div className="card">
-            <h3>Lenders</h3>
             {fundings.length === 0 ? (
-              <div className="muted small">No funding yet.</div>
+              <div className="empty">Be the first to fund this loan.</div>
             ) : (
-              <div className="tbl">
+              <div className="scroll">
                 <table>
                   <thead>
                     <tr>
                       <th>Lender</th>
-                      <th>Route</th>
-                      <th>Amount</th>
-                      <th>Tx</th>
+                      <th>Paid by</th>
+                      <th className="r">Amount</th>
+                      <th className="r">Transaction</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {fundings.map((f: Any) => {
-                      const who = live.seed?.lenders.find((l: Any) => l.wallet.toLowerCase() === String(f.lender).toLowerCase())
-                      return (
-                        <tr key={f.tx + f.lender}>
-                          <td>{who?.name ?? short(f.lender)}</td>
-                          <td>{f.viaFiat ? <span className="chip blue">Bank → on-ramp</span> : <span className="chip">USDC</span>}</td>
-                          <td>{usd(f.amount, 2)}</td>
-                          <td>
-                            <Hash h={f.tx} config={live.config} />
-                          </td>
-                        </tr>
-                      )
-                    })}
+                    {fundings.map((f: Any) => (
+                      <tr key={`${f.tx}-${f.lender}`}>
+                        <td>{lenderFor(live, f.lender)?.name ?? short(f.lender)}</td>
+                        <td>{f.viaFiat ? 'Bank transfer' : 'USDC'}</td>
+                        <td className="r">{usd(f.amount, 2)}</td>
+                        <td className="r">
+                          <Tx h={f.tx} live={live} />
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
             )}
-          </div>
+          </section>
         </div>
 
-        <div className="stack" style={{ gap: 14 }}>
+        <div className="stack" style={{ gap: 20 }}>
           {loan.status === 1 ? (
-            <div className="card stack">
-              <h3 style={{ margin: 0 }}>Fund this loan</h3>
-              <div className="small muted">{usd(remaining)} left to raise. Notes are only issued to KYC-verified lenders.</div>
-              <div className="tabs" role="tablist">
-                <button className={tab === 'fiat' ? 'on' : ''} onClick={() => setTab('fiat')}>
-                  Bank transfer
-                </button>
-                <button className={tab === 'crypto' ? 'on' : ''} onClick={() => setTab('crypto')}>
-                  Stablecoins
-                </button>
-              </div>
-              {tab === 'fiat' ? (
-                <div className="stack">
-                  <div className="small">
-                    Lending as <b>{ana?.name}</b> ({ana?.country}), KYC {ana?.kycStatus}. Paying in EUR from {ana?.bankAccount}.
-                  </div>
-                  {!intent ? (
-                    <>
-                      <label className="field">
-                        Amount (EUR)
-                        <input id="fiat-amount" inputMode="decimal" placeholder="e.g. 3000" value={amount} onChange={(e) => setAmount(e.target.value)} />
-                      </label>
-                      <button
-                        className="btn"
-                        disabled={!!busy || !Number(amount)}
-                        onClick={() =>
-                          act('intent', async () => {
-                            const r = await api('/api/onramp/intent', { lenderId: 'lender-ana', loanId: id, amountMinor: Math.round(Number(amount) * 100), currency: 'EUR' })
-                            setIntent(r)
-                          })
-                        }
-                      >
-                        Get payment instructions
-                      </button>
-                    </>
-                  ) : (
-                    <div className="stack">
-                      <div className="card tight" style={{ background: 'var(--wash)', border: 0 }}>
-                        <div className="small muted">Transfer {money(intent.intent.amountMinor, 'EUR')} to</div>
-                        <div className="mono">{intent.instructions.iban}</div>
-                        <div className="small muted" style={{ marginTop: 6 }}>
-                          Reference
-                        </div>
-                        <div className="mono">{intent.instructions.reference}</div>
-                      </div>
-                      <button
-                        className="btn accent"
-                        disabled={!!busy}
-                        onClick={() =>
-                          act(
-                            'deposit',
-                            async () => {
-                              const r = await api('/api/onramp/simulate-deposit', { reference: intent.intent.reference })
-                              if (r.run?.status !== 'success') throw new Error('CRE did not credit the deposit, see Operations')
-                              setIntent(null)
-                              setAmount('')
-                            },
-                            'Deposit verified by CRE and credited as loan notes',
-                          )
-                        }
-                      >
-                        {busy === 'deposit' ? 'Bank → on-ramp → CRE verifying…' : 'Simulate the bank transfer arriving'}
-                      </button>
-                      <div className="small muted">
-                        The on-ramp converts EUR to USDC and mints it into the market. CRE then checks the deposit privately, compares the rate with
-                        Chainlink EUR/USD and credits the notes.
-                      </div>
-                    </div>
-                  )}
+            <section className="panel panel-pad stack" style={{ gap: 16 }}>
+              <h2>Fund this loan</h2>
+              {live.state.snapshot?.fundingPaused ? (
+                <div className="small" style={{ color: 'var(--bad)' }}>
+                  Funding is paused while a reserve check is reviewed.
                 </div>
               ) : (
-                <div className="stack">
-                  <div className="small">
-                    Lending as <b>{ben?.name}</b> from demo wallet <span className="mono">{short(live.wallet?.address)}</span> · balance{' '}
-                    {usd(live.wallet?.usdc, 0)} tUSDC
-                  </div>
-                  {!live.wallet?.verified ? (
-                    <button
-                      className="btn"
-                      disabled={!!busy}
-                      onClick={() => act('kyc', () => api('/api/lender/onboard', { lenderId: 'lender-ben' }), 'KYC workflow started on CRE')}
-                    >
-                      {busy === 'kyc' ? 'Starting…' : 'Verify KYC with CRE first'}
+                <>
+                  <div className="tabs" role="tablist">
+                    <button role="tab" aria-selected={tab === 'bank'} className={tab === 'bank' ? 'on' : ''} onClick={() => setTab('bank')}>
+                      Bank transfer
                     </button>
-                  ) : (
-                    <>
-                      <label className="field">
-                        Amount (USDC)
-                        <input id="usdc-amount" inputMode="decimal" placeholder={`up to ${Number(remaining) / 1e6}`} value={amount} onChange={(e) => setAmount(e.target.value)} />
-                      </label>
-                      <button
-                        className="btn accent"
-                        disabled={!!busy || !Number(amount)}
-                        onClick={() =>
-                          act('fund', () => api('/api/demo-wallet/fund', { loanId: id, amountUsd: Number(amount) }), 'Funded with stablecoins').then(() => setAmount(''))
-                        }
-                      >
-                        {busy === 'fund' ? 'Approving and funding…' : 'Approve and fund'}
-                      </button>
-                    </>
-                  )}
-                </div>
+                    <button role="tab" aria-selected={tab === 'usdc'} className={tab === 'usdc' ? 'on' : ''} onClick={() => setTab('usdc')}>
+                      USDC
+                    </button>
+                  </div>
+                  {tab === 'bank' ? <BankTransfer loan={loan} live={live} notify={notify} /> : <UsdcFunding loan={loan} live={live} notify={notify} />}
+                </>
               )}
-            </div>
+            </section>
           ) : null}
 
           {loan.status === 3 || loan.status === 5 ? (
-            <div className="card stack">
-              <h3 style={{ margin: 0 }}>Repayment (sandbox)</h3>
+            <section className="panel panel-pad stack">
+              <h2>Repayment</h2>
               <div className="small muted">
-                The buyer pays {usd(BigInt(loan.target) + interest, 2)}. The payment processor captures it, the collection bank receives it, and CRE
-                only marks the loan repaid when both sources agree.
+                {usd(dueOf(loan), 2)} due from {doc?.buyer}. Lenders are paid once the bank and the payment processor both confirm the payment.
               </div>
-              <button className="btn accent" disabled={!!busy} onClick={() => act('pay', () => api('/api/buyer/pay', { loanId: id }), 'Repayment confirmed by CRE')}>
-                {busy === 'pay' ? 'Buyer paying, CRE checking two sources…' : `${doc?.buyer ?? 'Buyer'} pays`}
+              <button className="btn block" disabled={!!busy} onClick={() => run('pay', () => api('/api/buyer/pay', { loanId: id }), 'Repayment confirmed')}>
+                {busy === 'pay' ? 'Confirming payment…' : 'Collect repayment'}
               </button>
-            </div>
+            </section>
           ) : null}
 
           {loan.status === 4 ? (
-            <div className="card stack">
-              <h3 style={{ margin: 0 }}>Repaid</h3>
-              <div className="small muted">Bank-transfer lenders are paid back to their bank automatically. Stablecoin lenders claim onchain.</div>
-              <button className="btn" disabled={!!busy} onClick={() => act('claim', () => api('/api/demo-wallet/claim', { loanId: id }), 'Claimed principal and interest')}>
-                {busy === 'claim' ? 'Claiming…' : `Claim as ${ben?.name}`}
-              </button>
-            </div>
+            <section className="panel panel-pad stack">
+              <h2>Repaid</h2>
+              <div className="small muted">
+                {usd(loan.repaidAmount, 2)} received{repayment ? ` (${repayment.reference})` : ''}. Bank-transfer lenders have been paid to their accounts.
+              </div>
+              {claimable > 0n ? (
+                <button className="btn primary block" disabled={!!busy} onClick={() => run('claim', () => api('/api/demo-wallet/claim', { loanId: id }), `Claimed ${usd(claimable, 2)}`)}>
+                  {busy === 'claim' ? 'Claiming…' : `Claim ${usd(claimable, 2)}`}
+                </button>
+              ) : (
+                <div className="small muted">Your wallet has claimed its share.</div>
+              )}
+            </section>
           ) : null}
 
-          <div className="card stack">
-            <div className="row between">
-              <h3 style={{ margin: 0 }}>CRE activity for this loan</h3>
-              <span className="cre-pill">
-                <span className="dot live" /> live
-              </span>
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Activity</h2>
             </div>
-            {loanRuns.length === 0 ? <div className="small muted">Workflow runs will appear here.</div> : loanRuns.slice(0, 8).map((r) => <RunLine key={r.id} run={r} config={live.config} />)}
-          </div>
+            <Activity runs={loanRuns.slice(0, 10)} live={live} empty="Activity on this loan will appear here." />
+          </section>
         </div>
       </div>
     </>
@@ -628,75 +805,75 @@ function LoanDetail({ id, live, go, toast }: { id: number; live: Live; go: (p: s
 }
 
 // ---------------------------------------------------------------------------
-// Business
+// Raise capital (business)
 // ---------------------------------------------------------------------------
 
-function Business({ live, toast, go }: { live: Live; toast: (m: string) => void; go: (p: string) => void }) {
-  const [busy, setBusy] = useState('')
+function Business({ live, notify }: { live: Live; notify: Notify }) {
+  const { busy, run } = useAction(live, notify)
   const listed = new Set((live.state?.loans ?? []).map((l: Any) => l.ref))
-  const listingRuns = live.runs.filter((r) => r.workflow === 'listing')
+  const reviewing = new Set(
+    live.runs.filter((r) => r.handler === 'verify-and-list' && (r.status === 'running' || r.status === 'queued')).map((r) => JSON.parse(r.input).docNumber),
+  )
+  const declined = new Map(
+    live.runs
+      .filter((r) => r.handler === 'verify-and-list' && r.resultData && !r.resultData.listed)
+      .map((r) => [r.resultData.docNumber, r.resultData.reason]),
+  )
   return (
     <>
-      <h1>Get paid now for goods you have already shipped.</h1>
-      <p className="lead">
-        Submit an invoice, bill of lading or equipment order. A Chainlink CRE workflow verifies it with the registry, screens sanctions and grades
-        your credit inside a secure enclave, so your financial data is never exposed. Approved requests are listed for lenders straight away.
-      </p>
-      <div className="split">
-        <div className="stack">
+      <h1 className="display">Get paid for shipped goods today.</h1>
+      <p className="lede">Request an advance on an invoice, bill of lading or equipment order. Most requests are reviewed in under a minute.</p>
+      <div className="split" style={{ marginTop: 36 }}>
+        <div className="stack" style={{ gap: 16 }}>
           {(live.seed?.borrowers ?? []).map((b: Any) => (
-            <div key={b.id} className="card stack">
-              <div className="row between">
+            <section key={b.id} className="panel">
+              <div className="panel-head">
                 <div>
-                  <h3 style={{ margin: 0 }}>{b.name}</h3>
+                  <h2>{b.name}</h2>
                   <div className="small muted">
-                    {b.country} · {b.credit.yearsTrading} years trading · payout to {b.bankAccount}
+                    {COUNTRY[b.country]}, trading for {b.credit.yearsTrading} years
                   </div>
                 </div>
               </div>
               {live.seed.documents
                 .filter((d: Any) => d.borrowerId === b.id)
                 .map((d: Any) => (
-                  <div key={d.number} className="row between" style={{ borderTop: '1px solid var(--line)', paddingTop: 10 }}>
+                  <div key={d.number} className="doc">
                     <div>
-                      <div style={{ fontWeight: 600 }}>{d.title}</div>
-                      <div className="small muted">
-                        {d.number} · {money(d.amountMinor, d.currency)} · buyer {d.buyer} · {d.dueInDays} days
+                      <div className="t">{d.title}</div>
+                      <div className="m">
+                        <span className="code">{d.number}</span>, {money(d.amountMinor, d.currency)} from {d.buyer}, due in {days(d.dueInDays)}
                       </div>
+                      {declined.has(d.number) && !listed.has(d.number) ? (
+                        <div className="small" style={{ color: 'var(--bad)', marginTop: 4 }}>
+                          Not approved: {declined.get(d.number)}
+                        </div>
+                      ) : null}
                     </div>
                     {listed.has(d.number) ? (
-                      <span className="chip green">Listed</span>
+                      <span className="tag good">Listed</span>
+                    ) : reviewing.has(d.number) ? (
+                      <span className="tag open">In review</span>
                     ) : (
                       <button
                         className="btn"
                         disabled={!!busy}
-                        onClick={async () => {
-                          setBusy(d.number)
-                          try {
-                            await api('/api/business/submit', { docNumber: d.number })
-                            toast(`Submitted ${d.number}. CRE is verifying it now.`)
-                          } catch (e) {
-                            toast(`Failed: ${(e as Error).message}`)
-                          } finally {
-                            setBusy('')
-                          }
-                        }}
+                        onClick={() => run(d.number, () => api('/api/business/submit', { docNumber: d.number }), `${d.number} submitted for review`)}
                       >
-                        {busy === d.number ? 'Submitting…' : 'Request financing'}
+                        Request financing
                       </button>
                     )}
                   </div>
                 ))}
-            </div>
+            </section>
           ))}
         </div>
-        <div className="card stack">
-          <div className="row between">
-            <h3 style={{ margin: 0 }}>Verification runs</h3>
-            <span className="cre-pill">Confidential Workflow · TEE</span>
+        <section className="panel">
+          <div className="panel-head">
+            <h2>Recent reviews</h2>
           </div>
-          {listingRuns.length === 0 ? <div className="small muted">No submissions yet.</div> : listingRuns.slice(0, 10).map((r) => <RunLine key={r.id} run={r} config={live.config} />)}
-        </div>
+          <Activity runs={live.runs.filter((r) => r.handler === 'verify-and-list').slice(0, 10)} live={live} empty="Reviews of your documents will appear here." />
+        </section>
       </div>
     </>
   )
@@ -706,162 +883,152 @@ function Business({ live, toast, go }: { live: Live; toast: (m: string) => void;
 // Operations
 // ---------------------------------------------------------------------------
 
-function Ops({ live, toast }: { live: Live; toast: (m: string) => void }) {
-  const [busy, setBusy] = useState('')
+function Operations({ live, notify }: { live: Live; notify: Notify }) {
+  const { busy, run } = useAction(live, notify)
   const snap = live.state?.snapshot
   const books = live.state?.books
   const recon = snap?.recon
-  const act = async (label: string, fn: () => Promise<unknown>, done: string) => {
-    setBusy(label)
-    try {
-      await fn()
-      toast(done)
-      await live.refresh()
-    } catch (e) {
-      toast(`Failed: ${(e as Error).message}`)
-    } finally {
-      setBusy('')
-    }
-  }
-  const counts = useMemo(() => {
-    const by: Record<string, number> = {}
-    for (const r of live.runs) by[r.workflow] = (by[r.workflow] ?? 0) + 1
-    return by
-  }, [live.runs])
+  const hasRecon = recon && Number(recon[1]) > 0
+  const movements = [
+    ...(live.state?.intents ?? []).map((i: Any) => ({ key: i.reference, at: i.settledAt ?? i.createdAt, what: 'Lender deposit', ref: i.reference, amount: money(i.amountMinor, i.currency, 2), state: i.status })),
+    ...(live.state?.payouts ?? []).map((p: Any) => ({ key: p.payoutRef, at: p.createdAt, what: p.kind === 'business' ? 'Payout to business' : 'Payout to lender', ref: p.payoutRef, amount: usd(p.amount, 2), state: 'sent' })),
+    ...(live.state?.bankCredits ?? [])
+      .filter((c: Any) => c.kind === 'repayment')
+      .map((c: Any) => ({ key: c.reference, at: c.valueDate, what: 'Buyer repayment', ref: c.reference, amount: money(c.amountMinor, c.currency, 2), state: 'received' })),
+  ].sort((a, b) => String(b.at).localeCompare(String(a.at)))
+  const STATE_TONE: Record<string, string> = { credited: 'good', sent: 'good', received: 'good', settled: 'warn', awaiting_funds: '', failed: 'bad' }
+  const STATE_LABEL: Record<string, string> = { credited: 'Credited', sent: 'Sent', received: 'Received', settled: 'Verifying', awaiting_funds: 'Awaiting', failed: 'Failed' }
 
   return (
     <>
-      <h1>Operations</h1>
-      <p className="lead">
-        Every change onchain comes from a signed Chainlink CRE report. This console shows each workflow run, the money that moved through the
-        rails, and the three-way reconciliation that pauses funding if the books ever disagree.
-      </p>
-      <div className="grid cols-4">
-        {['listing', 'lender', 'settlement', 'monitor'].map((w) => (
-          <div key={w} className="card kpi">
-            <div className="label">{w} workflow</div>
-            <div className="value">{counts[w] ?? 0} runs</div>
-          </div>
-        ))}
+      <div className="page-head">
+        <div>
+          <h1>Operations</h1>
+          <p className="lede" style={{ marginTop: 8 }}>
+            Money movements, automated checks and the reserve position.
+          </p>
+        </div>
       </div>
 
-      <div className="card section stack">
-        <div className="row between">
-          <h2 style={{ margin: 0 }}>Three-way reconciliation</h2>
+      <section className="panel">
+        <div className="panel-head">
+          <h2>Reserve check</h2>
           <div className="row">
-            <button className="btn" disabled={!!busy} onClick={() => act('monitor', () => api('/api/monitor/run', {}), 'Monitor workflow finished')}>
-              {busy === 'monitor' ? 'CRE monitor running…' : 'Run CRE monitor now'}
+            <button className="btn" disabled={!!busy} onClick={() => run('check', () => api('/api/monitor/run', {}), 'Reserve check complete')}>
+              {busy === 'check' ? 'Checking…' : 'Run check'}
             </button>
-            <button className="btn ghost" disabled={!!busy} onClick={() => act('tamper', () => api('/api/demo/tamper', {}), 'A deposit was booked at the bank without a matching mint')}>
-              Inject a books mismatch
-            </button>
-            {live.state?.ledgerAdjustments?.length ? (
-              <button className="btn ghost" disabled={!!busy} onClick={() => act('untamper', () => api('/api/demo/untamper', {}), 'Books corrected')}>
-                Correct the books
-              </button>
-            ) : null}
             {snap?.fundingPaused ? (
-              <button className="btn danger" disabled={!!busy} onClick={() => act('resume', () => api('/api/ops/resume', {}), 'Funding resumed by the operator')}>
+              <button className="btn danger" disabled={!!busy} onClick={() => run('resume', () => api('/api/ops/resume', {}), 'Funding resumed')}>
                 Resume funding
               </button>
             ) : null}
           </div>
         </div>
         {snap?.fundingPaused ? (
-          <div className="banner stop">Circuit breaker on: new funding is paused until an operator resumes it.</div>
-        ) : recon && Number(recon[1]) > 0 ? (
-          <div className={`banner ${recon[0] ? 'ok' : 'stop'}`}>
-            {recon[0] ? 'Last reconciliation passed' : 'Last reconciliation failed'} · {ago(new Date(Number(recon[1]) * 1000).toISOString())}
+          <div className="notice bad">Mismatch found. New funding is paused until an operator resumes it.</div>
+        ) : hasRecon ? (
+          <div className={`notice ${recon[0] ? 'good' : 'idle'}`}>
+            {recon[0]
+              ? `Bank, on-ramp and ledger agree, checked ${ago(new Date(Number(recon[1]) * 1000).toISOString())}`
+              : `The last check found a mismatch (${ago(new Date(Number(recon[1]) * 1000).toISOString())}). Run the check again to confirm the books are back in line.`}
           </div>
         ) : (
-          <div className="banner info">No reconciliation has run yet.</div>
+          <div className="notice idle">No reserve check has run yet.</div>
         )}
-        <div className="recon">
-          <div className="leg">
-            <div className="small muted">Bank books: cash received</div>
-            <div className="v">{usd(books?.bankUsd6, 2)}</div>
+        <div className="legs">
+          <div>
+            <span>Cash received at the bank</span>
+            <b>{usd(books?.bankUsd6, 2)}</b>
           </div>
-          <div className="leg">
-            <div className="small muted">On-ramp books: stablecoins minted</div>
-            <div className="v">{usd(books?.onrampUsd6, 2)}</div>
+          <div>
+            <span>USDC minted by the on-ramp</span>
+            <b>{usd(books?.onrampUsd6, 2)}</b>
           </div>
-          <div className="leg">
-            <div className="small muted">Onchain: credited as loan notes</div>
-            <div className="v">{usd(snap?.totalFiatIn, 2)}</div>
+          <div>
+            <span>Credited to lenders onchain</span>
+            <b>{usd(snap?.totalFiatIn, 2)}</b>
           </div>
         </div>
-        <div className="small muted">
-          Market holds {usd(snap?.held, 2)} against {usd(snap?.reserved, 2)} owed to loans and lenders.
+      </section>
+
+      <div className="split" style={{ marginTop: 24 }}>
+        <section className="panel">
+          <div className="panel-head">
+            <h2>Automated checks</h2>
+            <span className="small muted">{live.runs.length}</span>
+          </div>
+          <Activity runs={live.runs.slice(0, 30)} live={live} empty="Checks will appear here as loans move." />
+        </section>
+        <div className="stack" style={{ gap: 20 }}>
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Money movements</h2>
+            </div>
+            {movements.length === 0 ? (
+              <div className="empty">No money has moved yet.</div>
+            ) : (
+              <div className="scroll">
+                <table>
+                  <tbody>
+                    {movements.map((m) => (
+                      <tr key={m.key}>
+                        <td>
+                          {m.what}
+                          <div className="small muted code">{m.ref}</div>
+                        </td>
+                        <td className="r">
+                          {m.amount}
+                          <div>
+                            <span className={`tag ${STATE_TONE[m.state] ?? ''}`}>{STATE_LABEL[m.state] ?? m.state}</span>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Lenders</h2>
+            </div>
+            {(live.seed?.lenders ?? []).map((l: Any) => (
+              <div key={l.id} className="doc">
+                <div>
+                  <div className="t">{l.name}</div>
+                  <div className="m">
+                    {COUNTRY[l.country] ?? l.country}, lends by {l.funding === 'fiat' ? 'bank transfer' : 'USDC'}
+                  </div>
+                </div>
+                <div className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
+                  <span className={`tag ${l.kycStatus === 'approved' ? 'good' : 'warn'}`}>{l.kycStatus === 'approved' ? 'Approved' : 'Pending'}</span>
+                  <button className="btn quiet" disabled={!!busy} onClick={() => run(`kyc-${l.id}`, () => api('/api/lender/onboard', { lenderId: l.id }), `Identity check started for ${l.name}`)}>
+                    Check
+                  </button>
+                </div>
+              </div>
+            ))}
+          </section>
         </div>
       </div>
 
-      <div className="split section">
-        <div className="stack">
-          <h2>Workflow runs</h2>
-          {live.runs.length === 0 ? <div className="card empty">No runs yet.</div> : live.runs.slice(0, 30).map((r) => <RunLine key={r.id} run={r} config={live.config} />)}
+      <details className="tools">
+        <summary>Test tools</summary>
+        <div className="panel panel-pad row">
+          <span className="small muted" style={{ flex: '1 1 260px' }}>
+            Book a deposit at the bank without a matching on-ramp mint, then run the reserve check to see funding pause.
+          </span>
+          <button className="btn quiet" disabled={!!busy} onClick={() => run('tamper', () => api('/api/demo/tamper', {}), 'Unmatched deposit booked')}>
+            Book unmatched deposit
+          </button>
+          {live.state?.ledgerAdjustments?.length ? (
+            <button className="btn quiet" disabled={!!busy} onClick={() => run('untamper', () => api('/api/demo/untamper', {}), 'Books corrected')}>
+              Correct the books
+            </button>
+          ) : null}
         </div>
-        <div className="stack">
-          <h2>Fiat moved through the rails</h2>
-          <div className="card tbl">
-            <table>
-              <thead>
-                <tr>
-                  <th>Type</th>
-                  <th>Ref</th>
-                  <th>Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(live.state?.intents ?? []).map((i: Any) => (
-                  <tr key={i.reference}>
-                    <td>
-                      Deposit <span className={`chip ${i.status === 'credited' ? 'green' : i.status === 'settled' ? 'warn' : ''}`}>{i.status}</span>
-                    </td>
-                    <td className="mono">{i.reference}</td>
-                    <td>{money(i.amountMinor, i.currency)}</td>
-                  </tr>
-                ))}
-                {(live.state?.payouts ?? []).map((p: Any) => (
-                  <tr key={p.payoutRef}>
-                    <td>Payout to {p.kind}</td>
-                    <td className="mono">{p.payoutRef}</td>
-                    <td>{usd(p.amount, 2)}</td>
-                  </tr>
-                ))}
-                {(live.state?.bankCredits ?? [])
-                  .filter((c: Any) => c.kind === 'repayment')
-                  .map((c: Any) => (
-                    <tr key={c.reference}>
-                      <td>Repayment</td>
-                      <td className="mono">{c.reference}</td>
-                      <td>{money(c.amountMinor, c.currency)}</td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
-          <h2 className="section">Lenders</h2>
-          <div className="card stack">
-            {(live.seed?.lenders ?? []).map((l: Any) => (
-              <div key={l.id} className="row between">
-                <div>
-                  <div style={{ fontWeight: 600 }}>{l.name}</div>
-                  <div className="small muted">
-                    {l.country} · funds by {l.funding === 'fiat' ? 'bank transfer' : 'stablecoins'} · KYC {l.kycStatus}
-                  </div>
-                </div>
-                <button
-                  className="btn ghost"
-                  disabled={!!busy}
-                  onClick={() => act(`kyc-${l.id}`, () => api('/api/lender/onboard', { lenderId: l.id }), `KYC workflow started for ${l.name}`)}
-                >
-                  Run KYC on CRE
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+      </details>
     </>
   )
 }
@@ -873,50 +1040,61 @@ function Ops({ live, toast }: { live: Live; toast: (m: string) => void }) {
 function App() {
   const live = useLive()
   const { path, go } = usePath()
-  const { msg, show } = useToast()
-  const running = live.runs.some((r) => r.status === 'running' || r.status === 'queued')
+  const { toast, notify } = useToast()
+  const busy = live.runs.some((r) => r.status === 'running' || r.status === 'queued')
   const loanMatch = path.match(/^\/loans\/(\d+)/)
   const page = loanMatch ? (
-    <LoanDetail id={Number(loanMatch[1])} live={live} go={go} toast={show} />
+    <LoanPage id={Number(loanMatch[1])} live={live} go={go} notify={notify} />
   ) : path === '/business' ? (
-    <Business live={live} toast={show} go={go} />
+    <Business live={live} notify={notify} />
   ) : path === '/ops' ? (
-    <Ops live={live} toast={show} />
+    <Operations live={live} notify={notify} />
   ) : (
     <Marketplace live={live} go={go} />
   )
-  const nav = [
+  const nav: [string, string][] = [
     ['/', 'Marketplace'],
-    ['/business', 'Business'],
+    ['/business', 'Raise capital'],
     ['/ops', 'Operations'],
   ]
   return (
     <>
       <header className="top">
         <div className="top-inner">
-          <Link to="/" go={go} className="brand">
-            <span className="brand-mark">tf</span> Tradeflow
+          <Link to="/" go={go} className="wordmark">
+            <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
+              <circle cx="4" cy="11" r="3" fill="#f2b705" />
+              <circle cx="18" cy="11" r="3" fill="none" stroke="#fff" strokeWidth="2" />
+              <path d="M8 11h6" stroke="#fff" strokeWidth="2" strokeDasharray="2 2" />
+            </svg>
+            Tradeflow
           </Link>
-          <nav className="nav">
+          <nav className="nav" aria-label="Main">
             {nav.map(([to, label]) => (
-              <Link key={to} to={to} go={go} className={(to === '/' ? path === '/' || path.startsWith('/loans') : path === to) ? 'active' : ''}>
+              <Link key={to} to={to} go={go} className={(to === '/' ? path === '/' || path.startsWith('/loans') : path === to) ? 'on' : ''}>
                 {label}
               </Link>
             ))}
           </nav>
-          <div className="top-right">
-            <span className="cre-pill" title="Workflows run on Chainlink CRE">
-              <span className={`dot ${running ? 'live' : ''}`} /> {running ? 'CRE workflow running' : 'Chainlink CRE'}
-            </span>
+          <div className="net" role="status">
+            <span className={`pip ${busy ? 'busy' : ''}`} />
+            <span>{busy ? 'Verifying' : 'All systems normal'}</span>
           </div>
         </div>
       </header>
       <main>{page}</main>
       <footer className="foot">
-        <span>Tradeflow · built at TOKEN2049 Origins on Chainlink CRE</span>
-        <span>by CodeDecoders, the team behind GSOS · gsos.io</span>
+        <div>
+          <span>Tradeflow</span>
+          <span>
+            Built by{' '}
+            <a href="https://codedecoders.io" target="_blank" rel="noreferrer">
+              CodeDecoders
+            </a>
+          </span>
+        </div>
       </footer>
-      {msg ? <div className="toast">{msg}</div> : null}
+      {toast ? <div className={`toast ${toast.bad ? 'bad' : ''}`}>{toast.text}</div> : null}
     </>
   )
 }

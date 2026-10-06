@@ -9,7 +9,7 @@
 //   - the operator's books (for the monitor's three-way reconciliation)
 // It also runs the CRE workflows through the CLI simulator and serves the web app.
 
-import { keccak256, toHex, parseAbiItem, encodeEventTopics, type Hash } from 'viem'
+import { keccak256, toHex, parseAbiItem, type Hash } from 'viem'
 import { borrowers, documents, lenders } from './seed'
 import { makeChain, marketAbi, erc20Abi, notesAbi, type Deployment } from './chain'
 import { makeBridge, type WorkflowRun } from './bridge'
@@ -57,7 +57,7 @@ type Intent = {
 type Payout = { idempotencyKey: string; payoutRef: string; kind: 'business' | 'lender'; loanId: number; beneficiaryId: string; amount: string; createdAt: string }
 type BankCredit = { reference: string; amountMinor: number; currency: 'EUR' | 'USD'; payer: string; valueDate: string; kind: 'deposit' | 'repayment' }
 type PspPayment = { reference: string; status: 'captured'; amountMinor: number; currency: 'EUR' | 'USD'; payer: string; capturedAt: string }
-type Listing = { docNumber: string; borrowerId: string; submittedAt: string; runId?: number; tenorDays: number }
+type Listing = { docNumber: string; borrowerId: string; submittedAt: string; tenorDays: number }
 
 type State = {
   intents: Intent[]
@@ -127,7 +127,6 @@ const json = (data: unknown, status = 200) =>
 const authed = (req: Request) => req.headers.get('x-api-key') === API_KEY
 const unauthorized = () => json({ error: 'invalid api key' }, 401)
 const nowIso = () => new Date().toISOString()
-const refHash = (ref: string) => keccak256(toHex(ref))
 const ccyRateE8 = async (currency: 'EUR' | 'USD'): Promise<bigint> => {
   if (currency === 'USD') return 100_000_000n
   // The on-ramp quotes its own EUR rate (slightly off the Chainlink feed, like a real provider).
@@ -149,6 +148,20 @@ const topic = (sig: string) => keccak256(toHex(sig))
 const FULLY_FUNDED = topic('LoanFullyFunded(uint256,address,uint256)')
 const REPAID = topic('Repaid(uint256,uint256,bytes32)')
 let lastBlock = await chain.publicClient.getBlockNumber()
+
+/** First block where the market has code (binary search), so event queries start there. */
+async function findDeployBlock(): Promise<bigint> {
+  let lo = 0n
+  let hi = lastBlock
+  while (lo < hi) {
+    const mid = (lo + hi) / 2n
+    const code = await chain.publicClient.getCode({ address: deployment.market, blockNumber: mid }).catch(() => undefined)
+    if (code && code !== '0x') hi = mid
+    else lo = mid + 1n
+  }
+  return lo
+}
+const deployBlock = await findDeployBlock()
 
 async function watch() {
   try {
@@ -193,7 +206,6 @@ const server = Bun.serve({
     '/': index,
     '/loans/*': index,
     '/ops': index,
-    '/lend': index,
     '/business': index,
 
     // ---------------- registry, credit, sanctions (listing workflow) ----------------
@@ -359,7 +371,7 @@ const server = Bun.serve({
           address: deployment.market,
           abi: marketAbi,
           eventName: 'Funded',
-          fromBlock: 0n,
+          fromBlock: deployBlock,
         }).catch(() => [])
         const credited = state.intents.filter((i) => i.status === 'credited')
         const sum = (xs: Intent[]) => xs.reduce((t, i) => t + BigInt(i.stablecoinAmount ?? '0'), 0n)
@@ -392,13 +404,12 @@ const server = Bun.serve({
         const b = borrowers.find((x) => x.id === doc.borrowerId)!
         const listing: Listing = { docNumber: doc.number, borrowerId: b.id, submittedAt: nowIso(), tenorDays: body.tenorDays ?? doc.dueInDays }
         state.listings.unshift(listing)
-        const run = bridge.enqueue({
+        persist()
+        void bridge.enqueue({
           ...WF.listing,
           httpPayload: { borrowerId: b.id, docNumber: doc.number, tenorDays: listing.tenorDays },
         })
-        listing.runId = (state.runs[0] as WorkflowRun).id
-        persist()
-        return json({ ok: true, listing, run: await Promise.race([run, Bun.sleep(50).then(() => null)]) })
+        return json({ ok: true, listing })
       },
     },
 
@@ -425,7 +436,7 @@ const server = Bun.serve({
         return json({
           intent,
           instructions: {
-            beneficiary: 'Tradeflow Client Funds (sandbox)',
+            beneficiary: 'Tradeflow Client Funds',
             iban: intent.currency === 'EUR' ? 'DE89 3704 0044 0532 0130 00' : 'US-ACH 021000021 / 9988776655',
             reference,
           },
@@ -505,11 +516,17 @@ const server = Bun.serve({
       GET: async () => {
         const wallet = chain.walletFor(DEMO_LENDER_KEY)
         const me = wallet.account!.address
-        const [usdc, verified] = await Promise.all([
+        const [usdc, verified, count] = await Promise.all([
           chain.publicClient.readContract({ address: deployment.stablecoin, abi: erc20Abi, functionName: 'balanceOf', args: [me] }),
           chain.publicClient.readContract({ address: deployment.notes, abi: notesAbi, functionName: 'isVerifiedHolder', args: [me] }),
+          chain.publicClient.readContract({ address: deployment.market, abi: marketAbi, functionName: 'loanCount' }),
         ])
-        return json({ address: me, usdc, verified })
+        const notes: Record<string, string> = {}
+        for (let id = 1n; id <= count; id++) {
+          const bal = await chain.publicClient.readContract({ address: deployment.notes, abi: notesAbi, functionName: 'balanceOf', args: [me, id] })
+          if (bal > 0n) notes[id.toString()] = bal.toString()
+        }
+        return json({ address: me, usdc, verified, notes })
       },
     },
 

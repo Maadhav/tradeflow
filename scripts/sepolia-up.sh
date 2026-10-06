@@ -48,8 +48,8 @@ for w in ["listing", "lender", "settlement", "monitor"]:
     json.dump(c, open(f"{root}/cre/{w}/config.sepolia.json", "w"), indent=2)
 EOF
 
-pkill -f "PORT=8788" 2>/dev/null || true
+[ -f "$RUN/rails-sepolia.pid" ] && kill "$(cat "$RUN/rails-sepolia.pid")" 2>/dev/null || true
 (cd "$ROOT/services/rails" && PORT=8788 DEPLOYMENT=sepolia RPC_URL="$RPC" CRE_TARGET=sepolia EXPLORER=https://sepolia.etherscan.io \
-  nohup bun run server.ts >"$RUN/rails-sepolia.log" 2>&1 </dev/null &)
+  nohup bun run server.ts >"$RUN/rails-sepolia.log" 2>&1 </dev/null & echo $! >"$RUN/rails-sepolia.pid")
 sleep 5
 tail -2 "$RUN/rails-sepolia.log"

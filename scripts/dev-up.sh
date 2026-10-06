@@ -13,7 +13,7 @@ RPC=http://127.0.0.1:8545
 FORWARDER=0x15fC6ae953E024d975e77382eEeC56A9101f9F88
 
 pkill -f "anvil --fork-url" 2>/dev/null || true
-pkill -f "bun run server.ts" 2>/dev/null || true
+[ -f "$RUN/rails-local.pid" ] && kill "$(cat "$RUN/rails-local.pid")" 2>/dev/null || true
 sleep 1
 nohup anvil --fork-url "${SEPOLIA_RPC:-https://ethereum-sepolia-rpc.publicnode.com}" --chain-id 11155111 --port 8545 --block-time 2 >"$RUN/anvil.log" 2>&1 &
 for i in $(seq 1 30); do cast chain-id --rpc-url $RPC >/dev/null 2>&1 && break; sleep 1; done
@@ -44,6 +44,6 @@ for w in ["listing", "lender", "settlement", "monitor"]:
 EOF
 
 rm -f "$ROOT/services/rails/data/state.local.json"
-(cd "$ROOT/services/rails" && nohup bun run server.ts >"$RUN/rails.log" 2>&1 &)
+(cd "$ROOT/services/rails" && nohup bun run server.ts >"$RUN/rails.log" 2>&1 </dev/null & echo $! >"$RUN/rails-local.pid")
 sleep 4
 tail -2 "$RUN/rails.log"
