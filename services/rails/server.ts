@@ -20,16 +20,16 @@ import index from './web/index.html'
 // ---------------------------------------------------------------------------
 
 const ROOT = new URL('../../', import.meta.url).pathname
+const KEYS: Record<string, `0x${string}`> = (await Bun.file(`${ROOT}.secrets/keys.json`).exists())
+  ? await Bun.file(`${ROOT}.secrets/keys.json`).json()
+  : {}
 const PORT = Number(process.env.PORT ?? 8787)
 const RPC_URL = process.env.RPC_URL ?? 'http://127.0.0.1:8545'
 const DEPLOYMENT = process.env.DEPLOYMENT ?? 'local'
 const API_KEY = process.env.RAILS_API_KEY ?? 'sandbox-key-local'
-const OPERATOR_KEY = (process.env.ONRAMP_OPERATOR_KEY ??
-  '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d') as `0x${string}` // anvil #1
-const DEMO_LENDER_KEY = (process.env.DEMO_LENDER_KEY ??
-  '0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a') as `0x${string}` // anvil #4 (Ben)
-const OWNER_KEY = (process.env.OWNER_KEY ??
-  '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80') as `0x${string}` // anvil #0 (deployer)
+const OPERATOR_KEY = (process.env.ONRAMP_OPERATOR_KEY ?? KEYS.platform) as `0x${string}`
+const DEMO_LENDER_KEY = (process.env.DEMO_LENDER_KEY ?? KEYS.ben) as `0x${string}`
+const OWNER_KEY = (process.env.OWNER_KEY ?? KEYS.platform) as `0x${string}`
 const CRE_BIN = process.env.CRE_BIN ?? `${process.env.HOME}/.cre/bin/cre`
 const CRE_TARGET = process.env.CRE_TARGET ?? 'local'
 const AUTO_RUN = process.env.AUTO_RUN !== '0'

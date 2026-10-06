@@ -1,0 +1,18 @@
+# Tradeflow: monitor workflow targets
+local:
+  user-workflow:
+    workflow-name: "tradeflow-monitor-local"
+    deployment-registry: "private"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.local.json"
+    secrets-path: "../secrets.yaml"
+
+sepolia:
+  user-workflow:
+    workflow-name: "tradeflow-monitor"
+    deployment-registry: "private"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.sepolia.json"
+    secrets-path: "../secrets.yaml"

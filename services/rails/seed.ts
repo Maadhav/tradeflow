@@ -1,5 +1,9 @@
 // Seed data for the rails sandbox: the businesses, their documents and credit files,
-// the lenders and their KYC files. All names are fictional.
+// the lenders and their KYC files. All names are fictional. Wallet addresses are fresh
+// keys generated for this project (addresses.json); private keys stay in .secrets/.
+
+import addresses from './addresses.json'
+const A = addresses as Record<string, `0x${string}`>
 
 export type Borrower = {
   id: string
@@ -47,7 +51,7 @@ export const borrowers: Borrower[] = [
     id: 'biz-sierra-verde',
     name: 'Sierra Verde Coffee Exporters',
     country: 'CO',
-    wallet: '0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc',
+    wallet: A['biz-sierra-verde'],
     bankAccount: 'CO-BANC-4471-2290',
     credit: { yearsTrading: 9, annualRevenueUsd: 4_200_000, onTimeRate: 0.96, avgDaysLate: 2, openDebtUsd: 180_000, priorLoans: 14 },
   },
@@ -55,7 +59,7 @@ export const borrowers: Borrower[] = [
     id: 'biz-pacific-freight',
     name: 'Pacific Freight Lines',
     country: 'SG',
-    wallet: '0x976EA74026E726554dB657fA54763abd0C3a0aa9',
+    wallet: A['biz-pacific-freight'],
     bankAccount: 'SG-DBS-0021-7788',
     credit: { yearsTrading: 12, annualRevenueUsd: 11_800_000, onTimeRate: 0.98, avgDaysLate: 1, openDebtUsd: 950_000, priorLoans: 31 },
   },
@@ -63,7 +67,7 @@ export const borrowers: Borrower[] = [
     id: 'biz-medina-textiles',
     name: 'Medina Textiles',
     country: 'MX',
-    wallet: '0x14dC79964da2C08b23698B3D3cc7Ca32193d9955',
+    wallet: A['biz-medina-textiles'],
     bankAccount: 'MX-SPEI-0129-4410',
     credit: { yearsTrading: 4, annualRevenueUsd: 1_350_000, onTimeRate: 0.88, avgDaysLate: 6, openDebtUsd: 240_000, priorLoans: 5 },
   },
@@ -71,9 +75,9 @@ export const borrowers: Borrower[] = [
     id: 'biz-rapid-parts',
     name: 'Rapid Parts Trading',
     country: 'AE',
-    wallet: '0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f',
+    wallet: A['biz-rapid-parts'],
     bankAccount: 'AE-ENBD-3307-1192',
-    credit: { yearsTrading: 3, annualRevenueUsd: 900_000, onTimeRate: 0.81, avgDaysLate: 11, openDebtUsd: 160_000, priorLoans: 3 },
+    credit: { yearsTrading: 3, annualRevenueUsd: 900_000, onTimeRate: 0.86, avgDaysLate: 7, openDebtUsd: 160_000, priorLoans: 3 },
   },
 ]
 
@@ -152,7 +156,7 @@ export const lenders: Lender[] = [
     country: 'ES',
     kycStatus: 'approved',
     kycLevel: 'retail-verified',
-    wallet: '0xa0Ee7A142d267C1f36714E4a8F75612F20a79720',
+    wallet: A['ana'],
     funding: 'fiat',
     bankAccount: 'ES91 2100 0418 4502 0005 1332',
   },
@@ -162,7 +166,7 @@ export const lenders: Lender[] = [
     country: 'US',
     kycStatus: 'approved',
     kycLevel: 'accredited',
-    wallet: '0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65',
+    wallet: A['ben'],
     funding: 'stablecoin',
   },
   {
@@ -171,7 +175,7 @@ export const lenders: Lender[] = [
     country: 'SG',
     kycStatus: 'pending',
     kycLevel: 'none',
-    wallet: '0xBcd4042DE499D14e55001CcbB24a551F3b954096',
+    wallet: A['chen'],
     funding: 'stablecoin',
   },
 ]

@@ -1,0 +1,12 @@
+# Tradeflow CRE project targets
+# local:   anvil fork of Ethereum Sepolia (fast development, same forwarder and Chainlink feeds)
+# sepolia: Ethereum Sepolia testnet
+local:
+  rpcs:
+    - chain-name: ethereum-testnet-sepolia
+      url: http://127.0.0.1:8545
+
+sepolia:
+  rpcs:
+    - chain-name: ethereum-testnet-sepolia
+      url: https://ethereum-sepolia-rpc.publicnode.com

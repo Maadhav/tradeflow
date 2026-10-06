@@ -7,3 +7,4 @@ services/rails/data/
 **/.env
 *.wasm
 .DS_Store
+.secrets/
