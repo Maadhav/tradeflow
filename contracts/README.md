@@ -1,66 +1,11 @@
-## Foundry
+# Tradeflow contracts
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+- `TradeflowMarket.sol`: credit marketplace and Chainlink CRE report receiver (via the official `ReceiverTemplate`).
+- `LoanNotes.sol`: ERC-1155 loan notes, transferable only between KYC-verified holders.
+- `TestStablecoin.sol`: 6-decimal testnet stablecoin minted by the on-ramp operator.
 
-Foundry consists of:
-
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
-
-## Documentation
-
-https://book.getfoundry.sh/
-
-## Usage
-
-### Build
-
-```shell
-$ forge build
-```
-
-### Test
-
-```shell
-$ forge test
-```
-
-### Format
-
-```shell
-$ forge fmt
-```
-
-### Gas Snapshots
-
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
+```bash
+forge test
+FORWARDER=0x15fC6ae953E024d975e77382eEeC56A9101f9F88 SETTLEMENT_ACCOUNT=... ONRAMP_OPERATOR=... \
+  forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast
 ```

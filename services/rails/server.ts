@@ -28,6 +28,8 @@ const OPERATOR_KEY = (process.env.ONRAMP_OPERATOR_KEY ??
   '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d') as `0x${string}` // anvil #1
 const DEMO_LENDER_KEY = (process.env.DEMO_LENDER_KEY ??
   '0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a') as `0x${string}` // anvil #4 (Ben)
+const OWNER_KEY = (process.env.OWNER_KEY ??
+  '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80') as `0x${string}` // anvil #0 (deployer)
 const CRE_BIN = process.env.CRE_BIN ?? `${process.env.HOME}/.cre/bin/cre`
 const CRE_TARGET = process.env.CRE_TARGET ?? 'local'
 const AUTO_RUN = process.env.AUTO_RUN !== '0'
@@ -337,7 +339,7 @@ const server = Bun.serve({
 
     // ---------------- app + demo controls ----------------
     '/api/config': {
-      GET: () => json({ deployment, rpcUrl: RPC_URL, demoLender: lenders.find((l) => l.id === 'lender-ben')!.wallet }),
+      GET: () => json({ deployment, rpcUrl: RPC_URL, explorer: process.env.EXPLORER ?? null, demoLender: lenders.find((l) => l.id === 'lender-ben')!.wallet }),
     },
     '/api/seed': {
       GET: () => json({ borrowers, documents, lenders }),
@@ -359,8 +361,15 @@ const server = Bun.serve({
           eventName: 'Funded',
           fromBlock: 0n,
         }).catch(() => [])
+        const credited = state.intents.filter((i) => i.status === 'credited')
+        const sum = (xs: Intent[]) => xs.reduce((t, i) => t + BigInt(i.stablecoinAmount ?? '0'), 0n)
+        const books = {
+          bankUsd6: (sum(credited) + state.ledgerAdjustments.reduce((t, a) => t + BigInt(a.usd6), 0n)).toString(),
+          onrampUsd6: sum(credited.filter((i) => i.mintTx)).toString(),
+        }
         return json({
           snapshot: snap,
+          books,
           loans,
           fundings: fundingEvents.map((e) => ({ ...e.args, tx: e.transactionHash })),
           intents: state.intents,
@@ -501,6 +510,14 @@ const server = Bun.serve({
           chain.publicClient.readContract({ address: deployment.notes, abi: notesAbi, functionName: 'isVerifiedHolder', args: [me] }),
         ])
         return json({ address: me, usdc, verified })
+      },
+    },
+
+    // Operator lifts the circuit breaker after investigating.
+    '/api/ops/resume': {
+      POST: async () => {
+        const tx = await chain.send(chain.walletFor(OWNER_KEY), deployment.market, marketAbi, 'resumeFunding', [])
+        return json({ ok: true, tx })
       },
     },
 
