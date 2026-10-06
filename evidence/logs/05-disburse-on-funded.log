@@ -1,0 +1,23 @@
+✓ Workflow compiled
+✓ Simulation limits enabled
+  HTTP: req=120kb resp=250kb timeout=10s | ConfHTTP: req=125kb resp=500kb timeout=1m30s | Consensus obs=25kb | ChainWrite evm_report=50kb evm_gas=10000000 solana_report=265b solana_cu=300000 | WASM binary=100mb compressed=20mb
+  Binary hash: 5fb096034d65cee6b2c8653d888a7b112632dfedd487a90c695920edf9a5e487
+  Config hash: 2e6c1511e3f55f82f4cbbf05a914c0c690fd53fb51849da980eb8b41d6c4fd5c
+2026-10-06T19:27:59Z [SIMULATION] Simulator Initialized
+2026-10-06T19:27:59Z [SIMULATION] Running trigger trigger=evm:ChainSelector:16015286601757825753@1.0.0
+2026-10-06T19:27:59Z [USER LOG] fiat payout PO-B-00001 sent to 0x353C817a3e2c7c80eF73E6f9B6f8AeDD2F950A65 for loan 1 (INV-2026-0142)
+2026-10-06T19:28:12Z [USER LOG] report delivered: action=4 tx=0x421029e2a30070de6d98b3661960364c970e7f48a7af16bd097ed364b2e5a5a8
+✓ Workflow Simulation Result:
+"{\"disbursed\":true,\"loanId\":\"1\",\"ref\":\"INV-2026-0142\",\"amount\":\"9335000000\",\"payoutRef\":\"PO-B-00001\",\"tx\":\"0x421029e2a30070de6d98b3661960364c970e7f48a7af16bd097ed364b2e5a5a8\"}"
+2026-10-06T19:28:12Z [SIMULATION] Execution finished signal received
+2026-10-06T19:28:12Z [SIMULATION] Skipping WorkflowEngineV2
+╭──────────────────────────────────────────────────────╮
+│ Simulation complete! Ready to deploy your workflow?  │
+│                                                      │
+│ Run cre account access to request deployment access. │
+╰──────────────────────────────────────────────────────╯
+Initializing...
+Loading settings...
+Checking RPC connectivity...
+Compiling workflow...
+Fetching transaction receipt for 0x58798468d8c42a59e9a2c59b3075d115b1064cadb4e5d9fd61e81c7eb6fdad92...

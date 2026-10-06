@@ -1,0 +1,32 @@
+✓ Workflow compiled
+✓ Simulation limits enabled
+  HTTP: req=120kb resp=250kb timeout=10s | ConfHTTP: req=125kb resp=500kb timeout=1m30s | Consensus obs=25kb | ChainWrite evm_report=50kb evm_gas=10000000 solana_report=265b solana_cu=300000 | WASM binary=100mb compressed=20mb
+  Binary hash: 2b79de20f64c876759dfa51d0172a2b1fd6ff3a33303008e7138b5c66e1da7f1
+  Config hash: 23287e2abdbcf2e988143665ef676b9c6b1ae048d53f9a75048755c474c26134
+✓ Parsed JSON input successfully
+✓ Created HTTP trigger payload with 3 fields
+2026-10-06T19:24:04Z [SIMULATION] Simulator Initialized
+2026-10-06T19:24:04Z [SIMULATION] Running trigger trigger=http-trigger@1.0.0-alpha
+╭────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Trigger requested TEE Execution your trigger will run in one of the following Tees:                │
+│     - AWS Nitro in us-west-2                                                                       │
+│ The simulator is not a real TEE, and is meant to debug.                                            │
+│ Do not use it for sensitive information.                                                           │
+│ During real execution, user logs for this trigger will not be visible, and will not leave the TEE. │
+│ They are presented in the simulator for debugging only.                                            │
+│                                                                                                    │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
+2026-10-06T19:24:13Z [USER LOG] report delivered: action=1 tx=0x25ac6b6db627578f8912728aaef293e6152e8e43d5580418fe92f75064a8f6d3
+✓ Workflow Simulation Result:
+"{\"listed\":true,\"docNumber\":\"INV-2026-0142\",\"grade\":\"A\",\"aprBps\":900,\"tenorDays\":60,\"currency\":\"EUR\",\"fxRateE8\":\"112137000\",\"target\":\"9335000000\",\"tx\":\"0x25ac6b6db627578f8912728aaef293e6152e8e43d5580418fe92f75064a8f6d3\"}"
+2026-10-06T19:24:13Z [SIMULATION] Execution finished signal received
+2026-10-06T19:24:13Z [SIMULATION] Skipping WorkflowEngineV2
+╭──────────────────────────────────────────────────────╮
+│ Simulation complete! Ready to deploy your workflow?  │
+│                                                      │
+│ Run cre account access to request deployment access. │
+╰──────────────────────────────────────────────────────╯
+Initializing...
+Loading settings...
+Checking RPC connectivity...
+Compiling workflow...

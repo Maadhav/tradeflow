@@ -1,0 +1,22 @@
+✓ Workflow compiled
+✓ Simulation limits enabled
+  HTTP: req=120kb resp=250kb timeout=10s | ConfHTTP: req=125kb resp=500kb timeout=1m30s | Consensus obs=25kb | ChainWrite evm_report=50kb evm_gas=10000000 solana_report=265b solana_cu=300000 | WASM binary=100mb compressed=20mb
+  Binary hash: 5fb096034d65cee6b2c8653d888a7b112632dfedd487a90c695920edf9a5e487
+  Config hash: 2e6c1511e3f55f82f4cbbf05a914c0c690fd53fb51849da980eb8b41d6c4fd5c
+2026-10-06T19:29:32Z [SIMULATION] Simulator Initialized
+2026-10-06T19:29:32Z [SIMULATION] Running trigger trigger=evm:ChainSelector:16015286601757825753@1.0.0
+2026-10-06T19:29:38Z [USER LOG] report delivered: action=6 tx=0x8d11525ef2353ee243773ada789947167d767369644d65c67489ac526e4f0c40
+✓ Workflow Simulation Result:
+"{\"loanId\":\"1\",\"redeemed\":[{\"lender\":\"lender-ana\",\"payout\":\"3407050170\",\"payoutRef\":\"PO-L-00002\",\"tx\":\"0x8d11525ef2353ee243773ada789947167d767369644d65c67489ac526e4f0c40\"}]}"
+2026-10-06T19:29:38Z [SIMULATION] Execution finished signal received
+2026-10-06T19:29:38Z [SIMULATION] Skipping WorkflowEngineV2
+╭──────────────────────────────────────────────────────╮
+│ Simulation complete! Ready to deploy your workflow?  │
+│                                                      │
+│ Run cre account access to request deployment access. │
+╰──────────────────────────────────────────────────────╯
+Initializing...
+Loading settings...
+Checking RPC connectivity...
+Compiling workflow...
+Fetching transaction receipt for 0x460e3683564ac6a484a5d80972b7a2a7570d0d642d3b0b9ec7fa2dddef207039...

@@ -1042,6 +1042,7 @@ function App() {
   const { path, go } = usePath()
   const { toast, notify } = useToast()
   const busy = live.runs.some((r) => r.status === 'running' || r.status === 'queued')
+  const paused = Boolean(live.state?.snapshot?.fundingPaused)
   const loanMatch = path.match(/^\/loans\/(\d+)/)
   const page = loanMatch ? (
     <LoanPage id={Number(loanMatch[1])} live={live} go={go} notify={notify} />
@@ -1077,12 +1078,20 @@ function App() {
             ))}
           </nav>
           <div className="net" role="status">
-            <span className={`pip ${busy ? 'busy' : ''}`} />
-            <span>{busy ? 'Verifying' : 'All systems normal'}</span>
+            <span className={`pip ${busy ? 'busy' : paused ? 'alert' : ''}`} />
+            <span>{busy ? 'Verifying' : paused ? 'Funding paused' : 'All systems normal'}</span>
           </div>
         </div>
       </header>
-      <main>{page}</main>
+      <main>
+        {live.state ? (
+          page
+        ) : (
+          <div className="loading" role="status">
+            Loading
+          </div>
+        )}
+      </main>
       <footer className="foot">
         <div>
           <span>Tradeflow</span>

@@ -1,0 +1,22 @@
+✓ Workflow compiled
+✓ Simulation limits enabled
+  HTTP: req=120kb resp=250kb timeout=10s | ConfHTTP: req=125kb resp=500kb timeout=1m30s | Consensus obs=25kb | ChainWrite evm_report=50kb evm_gas=10000000 solana_report=265b solana_cu=300000 | WASM binary=100mb compressed=20mb
+  Binary hash: 8af68e27204849a1606dc5e1d824c073a27a84c162c60018b80c0c92330b8dd2
+  Config hash: 69a9358e50146b3f267efc2074b106a5e59c655bedfeaa28843fe91831acc121
+2026-10-06T19:35:02Z [SIMULATION] Simulator Initialized
+2026-10-06T19:35:02Z [SIMULATION] Running trigger trigger=cron-trigger@1.0.0
+2026-10-06T19:35:24Z [USER LOG] report delivered: action=7 tx=0x26f041c225ded0d5bc3bb1a8c163d3eb7c0b10f8da98a7680a2501c291112db7
+2026-10-06T19:35:38Z [USER LOG] report delivered: action=8 tx=0xe0507cabfad380b401aebda8b314235425e76a59ed2dc40f58314ccb1fbf47fa
+✓ Workflow Simulation Result:
+"{\"checkedAt\":\"2026-10-06T11:35:38.111Z\",\"loans\":\"2\",\"statusChanges\":[{\"loanId\":\"2\",\"status\":\"late\",\"businessFrozen\":true,\"tx\":\"0x26f041c225ded0d5bc3bb1a8c163d3eb7c0b10f8da98a7680a2501c291112db7\"}],\"reconciliation\":{\"ok\":true,\"cashAtBank\":\"3357381780\",\"stablecoinsMinted\":\"3357381780\",\"creditedOnchain\":\"3357381780\",\"stablecoinsHeld\":\"1\",\"reserved\":\"1\",\"checks\":{\"bankMatchesOnramp\":true,\"onrampMatchesChain\":true,\"solvent\":true},\"tx\":\"0xe0507cabfad380b401aebda8b314235425e76a59ed2dc40f58314ccb1fbf47fa\"}}"
+2026-10-06T19:35:38Z [SIMULATION] Execution finished signal received
+2026-10-06T19:35:38Z [SIMULATION] Skipping WorkflowEngineV2
+╭──────────────────────────────────────────────────────╮
+│ Simulation complete! Ready to deploy your workflow?  │
+│                                                      │
+│ Run cre account access to request deployment access. │
+╰──────────────────────────────────────────────────────╯
+Initializing...
+Loading settings...
+Checking RPC connectivity...
+Compiling workflow...

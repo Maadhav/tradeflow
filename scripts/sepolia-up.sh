@@ -27,6 +27,7 @@ topup "$(addr creSigner)" "${CRE_SIGNER_ETH:-0.08}"
 topup "$(addr ben)" "${BEN_ETH:-0.02}"
 
 if [ ! -f "$ROOT/contracts/deployments/sepolia.json" ] || [ "${REDEPLOY:-0}" = "1" ]; then
+  rm -f "$ROOT/services/rails/data/state.sepolia.json"
   (cd "$ROOT/contracts" && FORWARDER=$FORWARDER SETTLEMENT_ACCOUNT="$(addr settlement)" ONRAMP_OPERATOR="$(addr platform)" \
     SECONDS_PER_DAY="${SECONDS_PER_DAY:-60}" DEPLOY_NAME=sepolia \
     forge script script/Deploy.s.sol --rpc-url "$RPC" --broadcast --private-key "$(key platform)" --slow >"$RUN/deploy-sepolia.log" 2>&1)
@@ -48,8 +49,9 @@ for w in ["listing", "lender", "settlement", "monitor"]:
     json.dump(c, open(f"{root}/cre/{w}/config.sepolia.json", "w"), indent=2)
 EOF
 
-[ -f "$RUN/rails-sepolia.pid" ] && kill "$(cat "$RUN/rails-sepolia.pid")" 2>/dev/null || true
+kill $(lsof -ti :8788) 2>/dev/null || true # the Sepolia app
+sleep 1
 (cd "$ROOT/services/rails" && PORT=8788 DEPLOYMENT=sepolia RPC_URL="$RPC" CRE_TARGET=sepolia EXPLORER=https://sepolia.etherscan.io \
-  nohup bun run server.ts >"$RUN/rails-sepolia.log" 2>&1 </dev/null & echo $! >"$RUN/rails-sepolia.pid")
+  exec nohup bun run server.ts >"$RUN/rails-sepolia.log" 2>&1 </dev/null & echo $! >"$RUN/rails-sepolia.pid")
 sleep 5
 tail -2 "$RUN/rails-sepolia.log"

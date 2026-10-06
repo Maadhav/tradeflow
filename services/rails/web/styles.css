@@ -65,6 +65,7 @@ h3 { font-size: 15px; line-height: 1.3; font-weight: 650; margin: 0; }
 .nav a.on { color: #fff; border-bottom-color: var(--crane); }
 .net { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 13px; color: #c9d3dc; white-space: nowrap; }
 .net .pip { width: 8px; height: 8px; border-radius: 50%; background: #6fcf97; }
+.net .pip.alert { background: #ff6b5b; }
 .net .pip.busy { background: var(--crane); animation: blink 1.1s ease-in-out infinite; }
 @keyframes blink { 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) { .net .pip.busy { animation: none; } }
@@ -78,6 +79,7 @@ h3 { font-size: 15px; line-height: 1.3; font-weight: 650; margin: 0; }
 }
 
 main { max-width: 1200px; margin: 0 auto; padding: 40px 24px 96px; }
+.loading { min-height: 50vh; display: grid; place-items: center; color: var(--muted); font-size: 14px; }
 @media (max-width: 720px) { main { padding: 28px 16px 72px; } }
 .page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; flex-wrap: wrap; margin-bottom: 32px; }
 .crumb { font-size: 13px; color: var(--muted); margin-bottom: 10px; }

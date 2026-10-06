@@ -3,11 +3,13 @@
 // Output: demo/out/tradeflow-walkthrough.webm (+ .mp4 via ffmpeg)
 
 import { chromium, type Page } from 'playwright'
-import { mkdirSync, readdirSync, renameSync } from 'node:fs'
+import { mkdirSync, renameSync } from 'node:fs'
 
 const BASE = process.env.BASE ?? 'http://localhost:8787'
 const EXPLORER = process.env.EXPLORER // e.g. https://eth-sepolia.blockscout.com
 const OUT_NAME = process.env.OUT_NAME ?? 'tradeflow-walkthrough'
+// RESUME=1 records only the tail (from correcting the books onwards) against existing state.
+const RESUME = process.env.RESUME === '1'
 const OUT = new URL('./out/', import.meta.url).pathname
 mkdirSync(OUT, { recursive: true })
 
@@ -33,10 +35,52 @@ async function caption(page: Page, title: string, body = '') {
   )
 }
 
+const AD_HOSTS = /adx\.ws|id5-sync|czilladx|adbutler|coinzilla|slise|bitmedia|hypelab|sevio|adsterra|a-ads|cointraffic|getsalt|specify|ads\.|\/ads\/|doubleclick|googlesyndication|adform|revive/i
+
+/** Runs in every explorer page: removes sponsored blocks whenever the explorer renders one. */
+function hideExplorerAds() {
+  if (!/blockscout/.test(location.host)) return
+  const hide = (el: Element | null) => el instanceof HTMLElement && (el.style.display = 'none')
+  const strip = () => {
+    for (const el of Array.from(document.querySelectorAll('iframe, ins'))) el.remove()
+    for (const el of Array.from(document.querySelectorAll('body *'))) {
+      const text = (el.textContent ?? '').trim()
+      if (text.length > 300) continue
+      if (/casino|free spins|claim bonus/i.test(text) || /^Sponsored:/i.test(text)) hide(el)
+      else if (/^Sponsored$/i.test(text)) {
+        let label: Element = el
+        while (!label.nextElementSibling && label.parentElement) label = label.parentElement
+        hide(label)
+        hide(label.nextElementSibling)
+      }
+    }
+  }
+  let queued = false
+  const schedule = () => {
+    if (queued) return
+    queued = true
+    requestAnimationFrame(() => ((queued = false), strip()))
+  }
+  new MutationObserver(schedule).observe(document, { childList: true, subtree: true, characterData: true })
+}
+
+/** Wait until the explorer has indexed the transaction, so it shows as confirmed. */
+async function waitIndexed(tx: string, timeoutMs = 60_000) {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const r = (await (await fetch(`${EXPLORER}/api/v2/transactions/${tx}`)).json()) as any
+      if (r?.status === 'ok' && r?.block_number) return
+    } catch {}
+    await sleep(2500)
+  }
+}
+
 /** Cut to the block explorer for a transaction, then come back to the app. */
 async function showTx(page: Page, tx: string | undefined, title: string, body = '') {
   if (!EXPLORER || !tx) return
   const back = page.url()
+  await waitIndexed(tx)
   await page.goto(`${EXPLORER}/tx/${tx}`, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {})
   await sleep(3500)
   await caption(page, title, body)
@@ -101,9 +145,14 @@ async function main() {
     viewport: { width: 1440, height: 900 },
     recordVideo: { dir: OUT, size: { width: 1440, height: 900 } },
   })
+  await context.addInitScript(hideExplorerAds)
+  await context.route('**/*', (route) => (AD_HOSTS.test(route.request().url()) ? route.abort() : route.continue()))
   const page = await context.newPage()
+  let after = 0
+  let run: any
   await page.goto(BASE)
   await sleep(1500)
+  if (!RESUME) {
 
   // 1. Intro
   await caption(page, 'Tradeflow: real-world business credit, verified by Chainlink CRE', 'Businesses get paid now instead of waiting 60 to 180 days. Lenders fund from a bank account or with stablecoins. Every step that depends on off-chain truth runs through a CRE workflow.')
@@ -115,11 +164,11 @@ async function main() {
   await nav(page, 'Raise capital')
   await caption(page, 'Step 1. A coffee exporter submits an unpaid invoice', 'Sierra Verde (Colombia) is owed €9,250 by Kaffeehaus Berlin, due in 60 days. Click "Request financing".')
   await sleep(4000)
-  let after = await latestRunId()
+  after = await latestRunId()
   const row = page.locator('.doc', { hasText: 'INV-2026-0142' })
   await row.getByRole('button', { name: 'Request financing' }).click()
   await caption(page, 'CRE listing workflow is running inside a TEE', 'Inside a secure enclave: document registry check, sanctions screening and a credit scorecard on the private credit file. Then Chainlink EUR/USD prices the invoice and the loan is listed onchain.')
-  let run = await waitRun(after, 'verify-and-list')
+  run = await waitRun(after, 'verify-and-list')
   await sleep(2500)
   const d0 = run.resultData ?? {}
   await caption(
@@ -162,7 +211,7 @@ async function main() {
   await showTx(page, run.resultData?.tx, 'On Sepolia: the CRE fiat-funding report', 'The market only credits notes because the on-ramped USDC is already sitting in the contract, unallocated.')
 
   // 6. Ben verifies KYC and funds the rest with USDC -> payout via log trigger
-  await clickButton(page, 'USDC')
+  await page.getByRole('tab', { name: 'USDC' }).click()
   await sleep(1500)
   after = await latestRunId()
   await caption(page, 'Step 4. Ben funds the rest with USDC', 'First his KYC is verified by a CRE workflow over Confidential HTTP.')
@@ -213,6 +262,14 @@ async function main() {
   await caption(page, 'Circuit breaker: funding paused onchain', 'CRE reported the mismatch and the market paused all new funding until an operator investigates.')
   await sleep(6000)
   await showTx(page, run.resultData?.reconciliation?.tx, 'On Sepolia: the failed reconciliation report', 'Reconciled(ok = false) and FundingPaused(true), written by the CRE monitor.')
+  } else {
+    await page.goto(`${BASE}/ops`)
+    await sleep(2500)
+    await caption(page, 'An operator investigates', 'The books are corrected and funding resumes.')
+    await sleep(3000)
+  }
+  await page.locator('details.tools').evaluate((d) => ((d as HTMLDetailsElement).open = true))
+  await sleep(800)
   await clickButton(page, 'Correct the books')
   await sleep(2000)
   await clickButton(page, 'Resume funding')
@@ -228,7 +285,7 @@ async function main() {
   await nav(page, 'Marketplace')
   await page.locator('a.loan', { hasText: 'spare parts' }).first().click()
   await sleep(2000)
-  await clickButton(page, 'USDC')
+  await page.getByRole('tab', { name: 'USDC' }).click()
   const l2 = (await api('/api/state')).loans.find((x: any) => x.ref === 'INV-2026-0388')
   await page.locator('#usdc-amount').fill((Number(l2.target) / 1e6).toString())
   after = await latestRunId()
@@ -248,10 +305,10 @@ async function main() {
   await caption(page, 'That is Tradeflow', 'Four CRE workflows orchestrate the whole product: a TEE for private credit data, Confidential HTTP for bank and KYC APIs, log triggers for payouts and repayments, and a cron monitor for risk and reserves. Built at TOKEN2049 Origins by CodeDecoders, the team behind GSOS.')
   await sleep(9000)
 
+  const video = page.video()
   await context.close()
   await browser.close()
-  const vid = readdirSync(OUT).filter((f) => f.endsWith('.webm') && !f.startsWith('tradeflow'))
-  if (vid[0]) renameSync(`${OUT}${vid[0]}`, `${OUT}${OUT_NAME}.webm`)
+  if (video) renameSync(await video.path(), `${OUT}${OUT_NAME}.webm`)
   console.log('saved', `${OUT}${OUT_NAME}.webm`)
 }
 

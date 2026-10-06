@@ -9,6 +9,9 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 ///         in stablecoin units (6 decimals). Notes can only be held by KYC-verified wallets:
 ///         the market adds wallets to the allowlist after a CRE-verified KYC check.
 contract LoanNotes is ERC1155, Ownable {
+    string public constant name = "Tradeflow Loan Note";
+    string public constant symbol = "TFN";
+
     address public market;
     mapping(address => bool) public isVerifiedHolder;
     mapping(uint256 => uint256) public totalSupply;
