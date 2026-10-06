@@ -1,0 +1,7 @@
+{
+  "name": "tradeflow-rails",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "bun run server.ts" },
+  "dependencies": { "viem": "^2.38.3" }
+}

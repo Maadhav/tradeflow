@@ -1,0 +1,9 @@
+node_modules/
+.run/
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+services/rails/data/
+**/.env
+*.wasm
+.DS_Store
