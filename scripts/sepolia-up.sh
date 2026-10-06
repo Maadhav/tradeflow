@@ -30,7 +30,8 @@ if [ ! -f "$ROOT/contracts/deployments/sepolia.json" ] || [ "${REDEPLOY:-0}" = "
   rm -f "$ROOT/services/rails/data/state.sepolia.json"
   (cd "$ROOT/contracts" && FORWARDER=$FORWARDER SETTLEMENT_ACCOUNT="$(addr settlement)" ONRAMP_OPERATOR="$(addr platform)" \
     SECONDS_PER_DAY="${SECONDS_PER_DAY:-60}" DEPLOY_NAME=sepolia \
-    forge script script/Deploy.s.sol --rpc-url "$RPC" --broadcast --private-key "$(key platform)" --slow >"$RUN/deploy-sepolia.log" 2>&1)
+    forge script script/Deploy.s.sol --rpc-url "$RPC" --broadcast --private-key "$(key platform)" --slow \
+    --gas-estimate-multiplier "${GAS_MULT:-760}" --with-gas-price "${GAS_PRICE:-1.6gwei}" --priority-gas-price 0.05gwei >"$RUN/deploy-sepolia.log" 2>&1)
 fi
 cat "$ROOT/contracts/deployments/sepolia.json"
 

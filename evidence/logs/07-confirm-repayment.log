@@ -1,0 +1,27 @@
+Initializing...
+Loading settings...
+Checking RPC connectivity...
+Compiling workflow...
+✓ Workflow compiled
+✓ Simulation limits enabled
+  HTTP: req=120kb resp=250kb timeout=10s | ConfHTTP: req=125kb resp=500kb timeout=1m30s | Consensus obs=25kb | ChainWrite evm_report=50kb evm_gas=10000000 solana_report=265b solana_cu=300000 | WASM binary=100mb compressed=20mb
+  Binary hash: 5aa0e08d1ac8b90f7f5a2bbdd6ac0f90f6c905154d1df42e1c47f01fd822d169
+  Config hash: 5fc7147e726d7cbf9504f8ac33cf05cc61ab69c38d83022899f56ed15254fee7
+✓ Parsed JSON input successfully
+✓ Created HTTP trigger payload with 2 fields
+2026-10-06T22:55:54Z [SIMULATION] Simulator Initialized
+2026-10-06T22:55:54Z [SIMULATION] Running trigger trigger=http-trigger@1.0.0-alpha
+2026-10-06T22:55:54Z [USER LOG] collection bank and payment processor agree on the payment
+2026-10-06T22:55:54Z [USER LOG] EUR/USD 1.1270 from the data feed
+2026-10-06T22:55:55Z [USER LOG] payment covers the lenders' share of loan 1, which is in the market
+2026-10-06T22:55:55Z [USER LOG] fiat payout PO-B-00002 sent to the business for the balance
+2026-10-06T22:56:13Z [USER LOG] report delivered: action=5 tx=0xe2634574c9f81725f8a4a8ca66af7cc7b6487c0ec50648451fb31f72565eeb0e
+✓ Workflow Simulation Result:
+"{\"repaid\":true,\"loanId\":1,\"reference\":\"PAY-1-MUWSWF14\",\"payer\":\"Kaffeehaus Berlin GmbH\",\"paid\":{\"amountMinor\":\"925000\",\"currency\":\"EUR\"},\"paidUsd6\":\"10424981250\",\"amount\":\"9520802191\",\"balance\":\"904179059\",\"balancePayoutRef\":\"PO-B-00002\",\"sources\":[\"collection bank\",\"payment processor\"],\"tx\":\"0xe2634574c9f81725f8a4a8ca66af7cc7b6487c0ec50648451fb31f72565eeb0e\"}"
+2026-10-06T22:56:13Z [SIMULATION] Execution finished signal received
+2026-10-06T22:56:13Z [SIMULATION] Skipping WorkflowEngineV2
+╭──────────────────────────────────────────────────────╮
+│ Simulation complete! Ready to deploy your workflow?  │
+│                                                      │
+│ Run cre account access to request deployment access. │
+╰──────────────────────────────────────────────────────╯

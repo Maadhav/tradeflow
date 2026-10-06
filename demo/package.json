@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "playwright": "^1.63.0"
+    "playwright": "^1.63.0",
+    "viem": "2.57.3"
   }
 }

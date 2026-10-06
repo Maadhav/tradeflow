@@ -7,8 +7,11 @@
 // cutaways, e.g. https://eth-sepolia.blockscout.com; leave unset locally), OUT_NAME (video name).
 // Output: demo/out/<OUT_NAME>.webm (convert to .mp4 with ffmpeg)
 
-import { chromium, type Locator, type Page } from 'playwright'
-import { mkdirSync, renameSync } from 'node:fs'
+import { chromium, type BrowserContext, type Locator, type Page } from 'playwright'
+import { mkdirSync, readFileSync, renameSync } from 'node:fs'
+import { createWalletClient, http, type Hex } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
+import { sepolia } from 'viem/chains'
 import { writeInvoicePdf } from './invoice-pdf'
 
 const BASE = process.env.BASE ?? 'http://localhost:8787'
@@ -83,6 +86,7 @@ function stage([origin, band]: [string, number]) {
 }
 
 let shown = { title: '', body: '' }
+let cfgTarget = 'local'
 async function paint(page: Page) {
   await page
     .evaluate(
@@ -330,6 +334,88 @@ async function showTx(page: Page, tx: string | undefined, title: string, body = 
 }
 
 // ---------------------------------------------------------------------------
+// Browser wallet for public deployments: an EIP-1193 provider backed by a real, fixed key
+// (WALLET_KEY_NAME in .secrets/keys.json, default ben). The key stays in this process; the page
+// only sees window.ethereum, exactly as with a wallet extension.
+// ---------------------------------------------------------------------------
+
+async function injectWallet(context: BrowserContext, rpcUrl: string) {
+  const keys = JSON.parse(readFileSync(new URL('../.secrets/keys.json', import.meta.url), 'utf8'))
+  const account = privateKeyToAccount(keys[process.env.WALLET_KEY_NAME ?? 'ben'])
+  const wallet = createWalletClient({ account, chain: sepolia, transport: http(rpcUrl) })
+  const rpc = async (method: string, params: unknown[]) => {
+    const res = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    })
+    const out = (await res.json()) as { result?: unknown; error?: { message: string } }
+    if (out.error) throw new Error(out.error.message)
+    return out.result
+  }
+  await context.exposeFunction('__walletRequest', async (method: string, params: any[]) => {
+    switch (method) {
+      case 'eth_requestAccounts':
+      case 'eth_accounts':
+        return [account.address]
+      case 'eth_chainId':
+        return `0x${sepolia.id.toString(16)}`
+      case 'wallet_switchEthereumChain':
+      case 'wallet_addEthereumChain':
+      case 'wallet_revokePermissions':
+        return null
+      case 'personal_sign':
+        return account.signMessage({ message: { raw: params[0] as Hex } })
+      case 'eth_sendTransaction': {
+        const tx = params[0]
+        return wallet.sendTransaction({ to: tx.to, data: tx.data, value: tx.value ? BigInt(tx.value) : undefined })
+      }
+      default:
+        return rpc(method, params)
+    }
+  })
+  await context.addInitScript((origin: string) => {
+    if (location.origin !== origin) return
+    const listeners: Record<string, ((...a: unknown[]) => void)[]> = {}
+    ;(window as any).ethereum = {
+      isMetaMask: true,
+      request: ({ method, params }: { method: string; params?: unknown[] }) => (window as any).__walletRequest(method, params ?? []),
+      on: (event: string, fn: (...a: unknown[]) => void) => void (listeners[event] ??= []).push(fn),
+      removeListener: (event: string, fn: (...a: unknown[]) => void) => void (listeners[event] = (listeners[event] ?? []).filter((f) => f !== fn)),
+    }
+  }, ORIGIN)
+  return account.address
+}
+
+/** Cut to the run's real CLI output (cre workflow simulate), the TEE banner included, then come back. */
+async function showTerminal(page: Page, run: any, title: string, body = '') {
+  const back = page.url()
+  const keep = shown
+  const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  const tone = (l: string) =>
+    /TEE|Nitro|not a real TEE|enclave/i.test(l) ? 'tee' : /\[USER LOG\]/.test(l) ? 'user' : /✓|Simulation Result/.test(l) ? 'ok' : ''
+  const lines = (run.logs ?? []).filter((l: string) => !/^(Initializing|Loading settings|Checking RPC)/.test(l)).slice(0, 40)
+  const cmd = `cre workflow simulate ${run.workflow} --target ${cfgTarget} --non-interactive --trigger-index 0 --http-payload '${esc(run.input ?? '')}' --broadcast`
+  await page.setContent(
+    `<html><body style="margin:0;background:#0d1419;color:#d6dde3;font:13px/1.5 ui-monospace,Menlo,monospace">` +
+      `<div style="padding:18px 22px 10px;color:#8a98a5;border-bottom:1px solid #1e2a33">Terminal: run ${run.id}, ${esc(run.workflow)} / ${esc(run.handler)}</div>` +
+      `<pre style="margin:0;padding:14px 22px 140px;white-space:pre-wrap;word-break:break-all"><span style="color:#f2b705">$ ${cmd}</span>\n` +
+      lines
+        .map((l: string) => {
+          const t = tone(l)
+          const color = t === 'tee' ? '#f2b705' : t === 'user' ? '#7fd1a8' : t === 'ok' ? '#9cc3ff' : '#d6dde3'
+          return `<span style="color:${color}">${esc(l)}</span>`
+        })
+        .join('\n') +
+      `</pre></body></html>`,
+  )
+  await caption(page, title, body)
+  await sleep(9000)
+  shown = keep
+  await open(page, back)
+}
+
+// ---------------------------------------------------------------------------
 // Flows shared by both businesses
 // ---------------------------------------------------------------------------
 
@@ -407,6 +493,8 @@ async function main() {
   await context.addInitScript(hideExplorerAds)
   await context.addInitScript(stage, [ORIGIN, BAND] as [string, number])
   await context.route('**/*', (route) => (AD_HOSTS.test(route.request().url()) ? route.abort() : route.continue()))
+  cfgTarget = cfg.deploymentName === 'sepolia' ? 'sepolia' : 'local'
+  if (!cfg.builtinWallets) await injectWallet(context, cfg.rpcUrl)
   const page = await context.newPage()
   page.on('pageerror', (e) => problems.push(`page error: ${e.message.split('\n')[0]}`))
   let after = 0
@@ -474,6 +562,12 @@ async function main() {
   )
   await audit(page, 'business: listed')
   await closeRun(page, review1.row)
+  await showTerminal(
+    page,
+    run,
+    'The same run in the terminal: cre workflow simulate',
+    'The CLI runs the TEE handler (declared for AWS Nitro) in its simulator and says so, then broadcasts the report to Sepolia.',
+  )
   await showTx(page, d0.tx, 'The listing report onchain', 'Delivered through the CRE forwarder to the market contract: LoanListed.')
 
   // 4. A second invoice, which the buyer disputes

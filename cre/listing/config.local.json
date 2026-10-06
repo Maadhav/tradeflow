@@ -5,7 +5,7 @@
   "notes": "0x5B925E5ADe82A7888844Ce8b49bb904091664FEB",
   "eurUsdFeed": "0x1a81afB8146aeFfCFc5E50e8479e826E7D55b910",
   "railsUrl": "http://localhost:8787",
-  "gasLimit": "1500000",
+  "gasLimit": "5000000",
   "authorizedKeys": [],
   "apiKeySecretId": "RAILS_API_KEY",
   "minScore": 650

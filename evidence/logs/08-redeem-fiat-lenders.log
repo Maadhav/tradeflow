@@ -1,0 +1,24 @@
+Initializing...
+Loading settings...
+Checking RPC connectivity...
+Compiling workflow...
+✓ Workflow compiled
+✓ Simulation limits enabled
+  HTTP: req=120kb resp=250kb timeout=10s | ConfHTTP: req=125kb resp=500kb timeout=1m30s | Consensus obs=25kb | ChainWrite evm_report=50kb evm_gas=10000000 solana_report=265b solana_cu=300000 | WASM binary=100mb compressed=20mb
+  Binary hash: 5aa0e08d1ac8b90f7f5a2bbdd6ac0f90f6c905154d1df42e1c47f01fd822d169
+  Config hash: 5fc7147e726d7cbf9504f8ac33cf05cc61ab69c38d83022899f56ed15254fee7
+Fetching transaction receipt for 0xe2634574c9f81725f8a4a8ca66af7cc7b6487c0ec50648451fb31f72565eeb0e...
+2026-10-06T22:56:20Z [SIMULATION] Simulator Initialized
+2026-10-06T22:56:20Z [SIMULATION] Running trigger trigger=evm:ChainSelector:16015286601757825753@1.0.0
+2026-10-06T22:56:20Z [USER LOG] loan 1 repaid: 1 bank-transfer lender to pay back
+2026-10-06T22:56:25Z [USER LOG] report delivered: action=6 tx=0xe42003b4efdf65c69908dfbd1a0c478222d5e8f019f8e1d6470eb9141af2410b
+2026-10-06T22:56:25Z [USER LOG] fiat payout PO-L-00003 sent to a bank-transfer lender
+✓ Workflow Simulation Result:
+"{\"loanId\":\"1\",\"redeemed\":[{\"lender\":\"lender-ana-ruiz-u4ap\",\"payout\":\"3424234190\",\"payoutRef\":\"PO-L-00003\",\"tx\":\"0xe42003b4efdf65c69908dfbd1a0c478222d5e8f019f8e1d6470eb9141af2410b\"}]}"
+2026-10-06T22:56:25Z [SIMULATION] Execution finished signal received
+2026-10-06T22:56:25Z [SIMULATION] Skipping WorkflowEngineV2
+╭──────────────────────────────────────────────────────╮
+│ Simulation complete! Ready to deploy your workflow?  │
+│                                                      │
+│ Run cre account access to request deployment access. │
+╰──────────────────────────────────────────────────────╯

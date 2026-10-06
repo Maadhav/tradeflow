@@ -7,15 +7,15 @@ Compiling workflow...
   HTTP: req=120kb resp=250kb timeout=10s | ConfHTTP: req=125kb resp=500kb timeout=1m30s | Consensus obs=25kb | ChainWrite evm_report=50kb evm_gas=10000000 solana_report=265b solana_cu=300000 | WASM binary=100mb compressed=20mb
   Binary hash: db9ca6ba78a69e106aea234d5e677e7bbb66c395577a93bb94319db9690fa598
   Config hash: 02427c83911ddd58a422f6e78fbe8052665a15e2818d55c5aed12b888bee6fd3
-2026-10-06T22:56:59Z [SIMULATION] Simulator Initialized
-2026-10-06T22:56:59Z [SIMULATION] Running trigger trigger=cron-trigger@1.0.0
-2026-10-06T22:57:00Z [USER LOG] loan health: 1 loan checked, 0 status changes
-2026-10-06T22:57:00Z [USER LOG] reconciliation: bank books, on-ramp books and the market agree, market is solvent
-2026-10-06T22:57:25Z [USER LOG] report delivered: action=8 tx=0x42cc7948ba30fa719756958876eefefd9e173663aa11dcc46a3749fedcd5018a
+2026-10-06T22:58:45Z [SIMULATION] Simulator Initialized
+2026-10-06T22:58:45Z [SIMULATION] Running trigger trigger=cron-trigger@1.0.0
+2026-10-06T22:58:46Z [USER LOG] loan health: 1 loan checked, 0 status changes
+2026-10-06T22:58:46Z [USER LOG] reconciliation: bank books, on-ramp books and the market agree, market is solvent
+2026-10-06T22:58:52Z [USER LOG] report delivered: action=8 tx=0x0fedf31fb3e2db52ea7923cc1c24a5d9b8c486abd918f868e32e10835dd64778
 ✓ Workflow Simulation Result:
-"{\"checkedAt\":\"2026-10-06T14:57:25.209Z\",\"loans\":\"1\",\"statusChanges\":[],\"reconciliation\":{\"ok\":true,\"cashAtBank\":\"3374312850\",\"stablecoinsMinted\":\"3374312850\",\"creditedOnchain\":\"3374312850\",\"stablecoinsHeld\":\"1\",\"reserved\":\"1\",\"checks\":{\"bankMatchesOnramp\":true,\"onrampMatchesChain\":true,\"solvent\":true},\"tx\":\"0x42cc7948ba30fa719756958876eefefd9e173663aa11dcc46a3749fedcd5018a\"}}"
-2026-10-06T22:57:25Z [SIMULATION] Execution finished signal received
-2026-10-06T22:57:25Z [SIMULATION] Skipping WorkflowEngineV2
+"{\"checkedAt\":\"2026-10-06T14:58:52.143Z\",\"loans\":\"1\",\"statusChanges\":[],\"reconciliation\":{\"ok\":true,\"cashAtBank\":\"3374312850\",\"stablecoinsMinted\":\"3374312850\",\"creditedOnchain\":\"3374312850\",\"stablecoinsHeld\":\"1\",\"reserved\":\"1\",\"checks\":{\"bankMatchesOnramp\":true,\"onrampMatchesChain\":true,\"solvent\":true},\"tx\":\"0x0fedf31fb3e2db52ea7923cc1c24a5d9b8c486abd918f868e32e10835dd64778\"}}"
+2026-10-06T22:58:52Z [SIMULATION] Execution finished signal received
+2026-10-06T22:58:52Z [SIMULATION] Skipping WorkflowEngineV2
 ╭──────────────────────────────────────────────────────╮
 │ Simulation complete! Ready to deploy your workflow?  │
 │                                                      │
