@@ -26881,6 +26881,7 @@ var marketAbi = parseAbi([
   "function totalFiatIn() view returns (uint256)",
   "function unallocated() view returns (uint256)",
   "function secondsPerDay() view returns (uint32)",
+  "function usedRef(bytes32 ref) view returns (bool)",
   "function loanStates(uint256 fromId, uint256 toId) view returns (uint8[] statuses, uint64[] maturities, uint256[] funded, uint256[] fiatFunded)",
   "function getLoan(uint256 loanId) view returns ((address borrower, uint8 assetType, uint8 riskGrade, bytes3 currency, uint8 status, uint32 aprBps, uint32 tenorDays, uint64 listedAt, uint64 fundedAt, uint64 disbursedAt, uint64 maturity, uint64 repaidAt, uint256 faceValueMinor, uint256 fxRateE8, uint256 target, uint256 funded, uint256 fiatFunded, uint256 repaidAmount, bytes32 docHash, string ref))"
 ]);
@@ -26966,6 +26967,7 @@ function confidentialGet(runtime, path) {
 var onVerifyLender = (runtime, payload) => {
   const { lenderId } = decodeInput(payload.input);
   const kyc = confidentialGet(runtime, `/v1/kyc/${lenderId}`);
+  runtime.log(`KYC file received: ${kyc.status}`);
   if (kyc.status !== "approved") {
     runtime.log(`KYC not approved for ${lenderId}: ${kyc.status}`);
     return JSON.stringify({ verified: false, lenderId, status: kyc.status });
@@ -26981,11 +26983,13 @@ var onFiatDeposit = (runtime, payload) => {
     throw new Error(`deposit ${reference} is ${dep.status}, not settled`);
   if (dep.destination.toLowerCase() !== runtime.config.market.toLowerCase())
     throw new Error("deposit minted to the wrong destination");
+  runtime.log("on-ramp: deposit settled and minted to the market");
   const kyc = confidentialGet(runtime, `/v1/kyc/${dep.lenderId}`);
   if (kyc.status !== "approved")
     throw new Error(`lender ${dep.lenderId} is not KYC approved`);
   if (kyc.wallet.toLowerCase() !== dep.wallet.toLowerCase())
     throw new Error("deposit wallet does not match KYC file");
+  runtime.log("KYC file approved and matches the deposit wallet");
   const providerRate = BigInt(dep.fxRateE8);
   let feedRate = 100000000n;
   if (dep.currency === "EUR") {
@@ -26995,6 +26999,7 @@ var onFiatDeposit = (runtime, payload) => {
     if (deviationBps > BigInt(runtime.config.maxFxDeviationBps)) {
       throw new Error(`on-ramp FX ${providerRate} deviates ${deviationBps} bps from Chainlink ${feedRate}`);
     }
+    runtime.log(`EUR/USD ${(Number(feedRate) / 1e8).toFixed(4)} from the data feed, on-ramp rate ${deviationBps} bps off (limit ${runtime.config.maxFxDeviationBps})`);
   } else if (providerRate !== 100000000n) {
     throw new Error("USD deposit quoted with a non-unit rate");
   }
@@ -27005,6 +27010,7 @@ var onFiatDeposit = (runtime, payload) => {
   const unallocated = read2(runtime, runtime.config.market, marketAbi, "unallocated");
   if (unallocated < claimed)
     throw new Error(`only ${unallocated} unallocated in the market, need ${claimed}`);
+  runtime.log("stablecoin amount recomputed and found in the market");
   const tx = writeAction(runtime, Action.FiatFunding, encodeAbiParameters(parseAbiParameters("uint256 loanId, address lender, uint256 amount, bytes32 depositRef"), [
     BigInt(dep.loanId),
     dep.wallet,

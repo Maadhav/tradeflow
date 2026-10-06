@@ -26771,6 +26771,7 @@ var marketAbi = parseAbi([
   "function totalFiatIn() view returns (uint256)",
   "function unallocated() view returns (uint256)",
   "function secondsPerDay() view returns (uint32)",
+  "function usedRef(bytes32 ref) view returns (bool)",
   "function loanStates(uint256 fromId, uint256 toId) view returns (uint8[] statuses, uint64[] maturities, uint256[] funded, uint256[] fiatFunded)",
   "function getLoan(uint256 loanId) view returns ((address borrower, uint8 assetType, uint8 riskGrade, bytes3 currency, uint8 status, uint32 aprBps, uint32 tenorDays, uint64 listedAt, uint64 fundedAt, uint64 disbursedAt, uint64 maturity, uint64 repaidAt, uint256 faceValueMinor, uint256 fxRateE8, uint256 target, uint256 funded, uint256 fiatFunded, uint256 repaidAmount, bytes32 docHash, string ref))"
 ]);
@@ -26796,6 +26797,17 @@ function read2(runtime, to, abi, functionName, args = []) {
   }).result();
   return decodeFunctionResult({ abi, functionName, data: bytesToHex3(reply.data) });
 }
+function readEurUsd(runtime, maxAgeSeconds = 2n * 86400n) {
+  const [roundId, answer, , updatedAt, answeredInRound] = read2(runtime, runtime.config.eurUsdFeed, feedAbi, "latestRoundData");
+  if (roundId === 0n || answeredInRound < roundId || answer <= 0n)
+    throw new Error("EUR/USD round not answered");
+  const now = BigInt(Math.floor(runtime.now().getTime() / 1000));
+  if (updatedAt > now + 300n)
+    throw new Error("EUR/USD round from the future");
+  if (now - updatedAt > maxAgeSeconds)
+    throw new Error("EUR/USD feed is stale");
+  return answer;
+}
 function writeAction(runtime, action, payload) {
   const encoded = encodeAbiParameters(parseAbiParameters("uint8 action, bytes payload"), [action, payload]);
   const report = runtime.report(prepareReportRequest(encoded)).result();
@@ -26820,6 +26832,7 @@ var refHash = (ref) => keccak256(toHex(ref));
 function decodeInput(input) {
   return JSON.parse(new TextDecoder().decode(input));
 }
+var toUsd6 = (amountMinor, rateE8) => amountMinor * rateE8 * 10000n / 100000000n;
 var bigintJson = (v) => JSON.stringify(v, (_, x) => typeof x === "bigint" ? x.toString() : x);
 var configSchema = baseConfig.extend({
   authorizedKeys: array(string2()),
@@ -26856,8 +26869,10 @@ var onFullyFunded = (runtime, log) => {
     throw new Error("unexpected event");
   const loanId = ev.args.loanId;
   const loan = read2(runtime, runtime.config.market, marketAbi, "getLoan", [loanId]);
-  if (loan.status !== 2)
+  if (loan.status !== 2) {
+    runtime.log(`loan ${loanId} is no longer waiting for its payout, skipping`);
     return JSON.stringify({ skipped: true, reason: `loan ${loanId} status ${loan.status}` });
+  }
   const payoutRef = postPayout(runtime, {
     kind: "business",
     loanId: Number(loanId),
@@ -26891,21 +26906,50 @@ var onRepaymentNotice = (runtime, payload) => {
     throw new Error(`payment ${reference} not found at both sources`);
   if (!check.agree)
     throw new Error(`bank and payment processor disagree on ${reference}`);
-  if (check.currency !== "USD")
+  if (check.currency !== "USD" && check.currency !== "EUR")
     throw new Error(`unsupported repayment currency ${check.currency}`);
-  const amount = BigInt(check.amountMinor) * 10000n;
+  runtime.log("collection bank and payment processor agree on the payment");
+  const rateE8 = check.currency === "USD" ? 100000000n : readEurUsd(runtime);
+  const paidUsd6 = toUsd6(BigInt(check.amountMinor), rateE8);
+  if (check.currency !== "USD")
+    runtime.log(`EUR/USD ${(Number(rateE8) / 1e8).toFixed(4)} from the data feed`);
   const loan = read2(runtime, runtime.config.market, marketAbi, "getLoan", [BigInt(loanId)]);
-  if (amount < loan.target)
-    throw new Error(`repayment ${amount} is below principal ${loan.target}`);
+  const owed = loan.target + loan.target * BigInt(loan.aprBps) * BigInt(loan.tenorDays) / (10000n * 365n);
+  if (paidUsd6 < owed)
+    throw new Error(`payment is worth ${paidUsd6} at the reference rate, below the ${owed} owed to lenders`);
   const unallocated = read2(runtime, runtime.config.market, marketAbi, "unallocated");
-  if (unallocated < amount)
-    throw new Error(`repayment not yet on-ramped: ${unallocated} < ${amount}`);
+  if (unallocated < owed)
+    throw new Error(`lenders' share not yet on-ramped: ${unallocated} < ${owed}`);
+  runtime.log(`payment covers the lenders' share of loan ${loanId}, which is in the market`);
+  const balance = paidUsd6 - owed;
+  const balancePayoutRef = balance > 0n ? postPayout(runtime, {
+    kind: "business",
+    loanId,
+    beneficiaryId: loan.borrower,
+    amount: balance.toString(),
+    idempotencyKey: `balance-${loanId}`
+  }) : undefined;
+  if (balancePayoutRef)
+    runtime.log(`fiat payout ${balancePayoutRef} sent to the business for the balance`);
+  const amount = owed;
   const tx = writeAction(runtime, Action.Repaid, encodeAbiParameters(parseAbiParameters("uint256 loanId, uint256 amount, bytes32 paymentRef"), [
     BigInt(loanId),
     amount,
     refHash(`payment|${reference}`)
   ]));
-  return bigintJson({ repaid: true, loanId, reference, payer: check.payer, amount, sources: ["collection bank", "payment processor"], tx });
+  return bigintJson({
+    repaid: true,
+    loanId,
+    reference,
+    payer: check.payer,
+    paid: { amountMinor: check.amountMinor, currency: check.currency },
+    paidUsd6,
+    amount,
+    balance,
+    balancePayoutRef,
+    sources: ["collection bank", "payment processor"],
+    tx
+  });
 };
 var onRepaid = (runtime, log) => {
   const ev = decode2(log);
@@ -26923,6 +26967,7 @@ var onRepaid = (runtime, log) => {
   };
   const list = new ClientCapability2().sendRequest(runtime, fetchLenders, ConsensusAggregationByFields({ list: identical }))(apiKey).result().list;
   const fiatLenders = list ? list.split(",").map((x) => ({ lenderId: x.split(":")[0], wallet: x.split(":")[1] })) : [];
+  runtime.log(`loan ${loanId} repaid: ${fiatLenders.length} bank-transfer lender${fiatLenders.length === 1 ? "" : "s"} to pay back`);
   const redeemed = [];
   for (const l of fiatLenders) {
     const balance = read2(runtime, runtime.config.notes, notesAbi, "balanceOf", [l.wallet, loanId]);
@@ -26937,6 +26982,7 @@ var onRepaid = (runtime, log) => {
       idempotencyKey: `redeem-${loanId}-${l.lenderId}`
     });
     const tx = writeAction(runtime, Action.FiatRedeemed, encodeAbiParameters(parseAbiParameters("uint256 loanId, address lender, bytes32 payoutRef"), [loanId, l.wallet, refHash(`payout|${payoutRef}`)]));
+    runtime.log(`fiat payout ${payoutRef} sent to a bank-transfer lender`);
     redeemed.push({ lender: l.lenderId, payout, payoutRef, tx });
   }
   return bigintJson({ loanId, redeemed });

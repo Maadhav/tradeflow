@@ -4,9 +4,12 @@
 // Handler 0 (EVM log: LoanFullyFunded): instruct the payout provider to pay the business in
 // fiat (idempotent per loan), then report Disbursed so the market releases the stablecoins to
 // the off-ramp operator and starts the loan clock.
-// Handler 1 (HTTP: buyer payment notice): confirm the repayment with TWO independent sources,
-// the collection bank and the buyer's payment processor, which must agree on amount and
-// currency on every node; check the on-ramped stablecoins are in the market; report Repaid.
+// Handler 1 (HTTP: buyer payment notice): the buyer pays the full document amount in its
+// currency. Confirm the payment with TWO independent sources, the collection bank and the
+// buyer's payment processor, which must agree on amount and currency on every node; value it in
+// USD with Chainlink's EUR/USD feed; check it covers the lenders' share (advance plus interest)
+// and that share is on-ramped into the market; pay the balance to the business in fiat
+// (idempotent per loan); report Repaid with the lenders' share.
 // Handler 2 (EVM log: Repaid): pay each fiat lender's bank account and report FiatRedeemed,
 // which burns their notes and moves their share to the off-ramp operator.
 
@@ -32,7 +35,7 @@ import {
 } from '@chainlink/cre-sdk'
 import { decodeEventLog, encodeAbiParameters, keccak256, parseAbi, parseAbiParameters, toHex, type Address, type Hex } from 'viem'
 import { z } from 'zod'
-import { Action, baseConfig, bigintJson, decodeInput, marketAbi, notesAbi, read, refHash, writeAction } from './lib'
+import { Action, baseConfig, bigintJson, decodeInput, marketAbi, notesAbi, read, readEurUsd, refHash, toUsd6, writeAction } from './lib'
 
 const configSchema = baseConfig.extend({
   authorizedKeys: z.array(z.string()),
@@ -46,7 +49,7 @@ const events = parseAbi([
   'event Repaid(uint256 indexed loanId, uint256 amount, bytes32 paymentRef)',
 ])
 
-type Loan = { borrower: Address; ref: string; target: bigint; repaidAmount: bigint; status: number }
+type Loan = { borrower: Address; ref: string; target: bigint; aprBps: number; tenorDays: number; repaidAmount: bigint; status: number }
 
 function decode(log: EVMLog) {
   const topics = log.topics.map((t) => bytesToHex(t)) as [Hex, ...Hex[]]
@@ -79,7 +82,10 @@ const onFullyFunded = (runtime: Runtime<Config>, log: EVMLog): string => {
   if (ev.eventName !== 'LoanFullyFunded') throw new Error('unexpected event')
   const loanId = ev.args.loanId as bigint
   const loan = read<Loan>(runtime, runtime.config.market, marketAbi, 'getLoan', [loanId])
-  if (loan.status !== 2) return JSON.stringify({ skipped: true, reason: `loan ${loanId} status ${loan.status}` })
+  if (loan.status !== 2) {
+    runtime.log(`loan ${loanId} is no longer waiting for its payout, skipping`)
+    return JSON.stringify({ skipped: true, reason: `loan ${loanId} status ${loan.status}` })
+  }
 
   const payoutRef = postPayout(runtime, {
     kind: 'business',
@@ -127,14 +133,36 @@ const onRepaymentNotice = (runtime: Runtime<Config>, payload: HTTPPayload): stri
 
   if (!check.found) throw new Error(`payment ${reference} not found at both sources`)
   if (!check.agree) throw new Error(`bank and payment processor disagree on ${reference}`)
-  if (check.currency !== 'USD') throw new Error(`unsupported repayment currency ${check.currency}`)
+  if (check.currency !== 'USD' && check.currency !== 'EUR') throw new Error(`unsupported repayment currency ${check.currency}`)
+  runtime.log('collection bank and payment processor agree on the payment')
 
-  const amount = BigInt(check.amountMinor) * 10_000n // cents -> 6 decimals
+  // Value the payment in USD at the Chainlink reference rate.
+  const rateE8 = check.currency === 'USD' ? 100_000_000n : readEurUsd(runtime)
+  const paidUsd6 = toUsd6(BigInt(check.amountMinor), rateE8)
+  if (check.currency !== 'USD') runtime.log(`EUR/USD ${(Number(rateE8) / 1e8).toFixed(4)} from the data feed`)
+
+  // Lenders are owed the advance plus interest; the rest of the payment belongs to the business.
   const loan = read<Loan>(runtime, runtime.config.market, marketAbi, 'getLoan', [BigInt(loanId)])
-  if (amount < loan.target) throw new Error(`repayment ${amount} is below principal ${loan.target}`)
+  const owed = loan.target + (loan.target * BigInt(loan.aprBps) * BigInt(loan.tenorDays)) / (10_000n * 365n)
+  if (paidUsd6 < owed) throw new Error(`payment is worth ${paidUsd6} at the reference rate, below the ${owed} owed to lenders`)
   const unallocated = read<bigint>(runtime, runtime.config.market, marketAbi, 'unallocated')
-  if (unallocated < amount) throw new Error(`repayment not yet on-ramped: ${unallocated} < ${amount}`)
+  if (unallocated < owed) throw new Error(`lenders' share not yet on-ramped: ${unallocated} < ${owed}`)
+  runtime.log(`payment covers the lenders' share of loan ${loanId}, which is in the market`)
 
+  const balance = paidUsd6 - owed
+  const balancePayoutRef =
+    balance > 0n
+      ? postPayout(runtime, {
+          kind: 'business',
+          loanId,
+          beneficiaryId: loan.borrower,
+          amount: balance.toString(),
+          idempotencyKey: `balance-${loanId}`,
+        })
+      : undefined
+  if (balancePayoutRef) runtime.log(`fiat payout ${balancePayoutRef} sent to the business for the balance`)
+
+  const amount = owed
   const tx = writeAction(
     runtime,
     Action.Repaid,
@@ -144,7 +172,19 @@ const onRepaymentNotice = (runtime: Runtime<Config>, payload: HTTPPayload): stri
       refHash(`payment|${reference}`),
     ]),
   )
-  return bigintJson({ repaid: true, loanId, reference, payer: check.payer, amount, sources: ['collection bank', 'payment processor'], tx })
+  return bigintJson({
+    repaid: true,
+    loanId,
+    reference,
+    payer: check.payer,
+    paid: { amountMinor: check.amountMinor, currency: check.currency },
+    paidUsd6,
+    amount,
+    balance,
+    balancePayoutRef,
+    sources: ['collection bank', 'payment processor'],
+    tx,
+  })
 }
 
 const onRepaid = (runtime: Runtime<Config>, log: EVMLog): string => {
@@ -166,6 +206,7 @@ const onRepaid = (runtime: Runtime<Config>, log: EVMLog): string => {
     .sendRequest(runtime, fetchLenders, ConsensusAggregationByFields<{ list: string }>({ list: identical }))(apiKey)
     .result().list
   const fiatLenders = list ? list.split(',').map((x) => ({ lenderId: x.split(':')[0], wallet: x.split(':')[1] as Address })) : []
+  runtime.log(`loan ${loanId} repaid: ${fiatLenders.length} bank-transfer lender${fiatLenders.length === 1 ? '' : 's'} to pay back`)
 
   const redeemed: unknown[] = []
   for (const l of fiatLenders) {
@@ -184,6 +225,7 @@ const onRepaid = (runtime: Runtime<Config>, log: EVMLog): string => {
       Action.FiatRedeemed,
       encodeAbiParameters(parseAbiParameters('uint256 loanId, address lender, bytes32 payoutRef'), [loanId, l.wallet, refHash(`payout|${payoutRef}`)]),
     )
+    runtime.log(`fiat payout ${payoutRef} sent to a bank-transfer lender`)
     redeemed.push({ lender: l.lenderId, payout, payoutRef, tx })
   }
   return bigintJson({ loanId, redeemed })

@@ -1,181 +1,78 @@
-// Seed data for the rails sandbox: the businesses, their documents and credit files,
-// the lenders and their KYC files. All names are fictional. Wallet addresses are fresh
-// keys generated for this project (addresses.json); private keys stay in .secrets/.
+// Sandbox reference data of the third parties the rails play: the credit bureau's files and
+// the KYC provider's decision rule. Nothing here is a customer: businesses and lenders sign up
+// through the app, and their documents are entered by the business and confirmed by the buyer.
+// All names are fictional.
 
-import addresses from './addresses.json'
-const A = addresses as Record<string, `0x${string}`>
+import { keccak256, toHex } from 'viem'
 
-export type Borrower = {
-  id: string
-  name: string
-  country: string
-  wallet: `0x${string}`
-  bankAccount: string
-  credit: {
-    yearsTrading: number
-    annualRevenueUsd: number
-    onTimeRate: number // share of past invoices paid on time, 0..1
-    avgDaysLate: number
-    openDebtUsd: number
-    priorLoans: number
-  }
+export type CreditFile = {
+  yearsTrading: number
+  annualRevenueUsd: number
+  onTimeRate: number // share of past invoices paid on time, 0..1
+  avgDaysLate: number
+  openDebtUsd: number
+  priorLoans: number
 }
 
-export type Document = {
-  number: string
-  type: 'invoice' | 'bill_of_lading' | 'equipment' | 'working_capital'
-  borrowerId: string
-  buyer: string
-  buyerCountry: string
-  amountMinor: number // 2 decimals
-  currency: 'EUR' | 'USD'
-  issuedAt: string
-  dueInDays: number
-  buyerConfirmed: boolean
-  title: string
-}
+/** Registration numbers are compared without case, spaces, dots or dashes. */
+export const normalizeRegistration = (s: string) => s.toUpperCase().replace(/[\s.\-]/g, '')
 
-export type Lender = {
-  id: string
-  name: string
-  country: string
-  kycStatus: 'approved' | 'pending' | 'rejected'
-  kycLevel: string
-  wallet: `0x${string}`
-  funding: 'fiat' | 'stablecoin'
-  bankAccount?: string
-}
-
-export const borrowers: Borrower[] = [
+/** Credit bureau files on record, keyed by country and normalized registration number. */
+export const bureau: { name: string; country: string; registrationNumber: string; credit: CreditFile }[] = [
   {
-    id: 'biz-sierra-verde',
     name: 'Sierra Verde Coffee Exporters',
     country: 'CO',
-    wallet: A['biz-sierra-verde'],
-    bankAccount: 'CO-BANC-4471-2290',
+    registrationNumber: '900482115-3',
     credit: { yearsTrading: 9, annualRevenueUsd: 4_200_000, onTimeRate: 0.96, avgDaysLate: 2, openDebtUsd: 180_000, priorLoans: 14 },
   },
   {
-    id: 'biz-pacific-freight',
     name: 'Pacific Freight Lines',
     country: 'SG',
-    wallet: A['biz-pacific-freight'],
-    bankAccount: 'SG-DBS-0021-7788',
+    registrationNumber: '201412345K',
     credit: { yearsTrading: 12, annualRevenueUsd: 11_800_000, onTimeRate: 0.98, avgDaysLate: 1, openDebtUsd: 950_000, priorLoans: 31 },
   },
   {
-    id: 'biz-medina-textiles',
     name: 'Medina Textiles',
     country: 'MX',
-    wallet: A['biz-medina-textiles'],
-    bankAccount: 'MX-SPEI-0129-4410',
+    registrationNumber: 'MTE180503KL2',
     credit: { yearsTrading: 4, annualRevenueUsd: 1_350_000, onTimeRate: 0.88, avgDaysLate: 6, openDebtUsd: 240_000, priorLoans: 5 },
   },
   {
-    id: 'biz-rapid-parts',
     name: 'Rapid Parts Trading',
     country: 'AE',
-    wallet: A['biz-rapid-parts'],
-    bankAccount: 'AE-ENBD-3307-1192',
+    registrationNumber: 'CN-3307119',
     credit: { yearsTrading: 3, annualRevenueUsd: 900_000, onTimeRate: 0.86, avgDaysLate: 7, openDebtUsd: 160_000, priorLoans: 3 },
   },
 ]
 
-export const documents: Document[] = [
-  {
-    number: 'INV-2026-0142',
-    type: 'invoice',
-    borrowerId: 'biz-sierra-verde',
-    buyer: 'Kaffeehaus Berlin GmbH',
-    buyerCountry: 'DE',
-    amountMinor: 925_000,
-    currency: 'EUR',
-    issuedAt: '2026-10-01',
-    dueInDays: 60,
-    buyerConfirmed: true,
-    title: 'Invoice advance: 4 containers of washed Arabica',
-  },
-  {
-    number: 'BL-SGSIN-88231',
-    type: 'bill_of_lading',
-    borrowerId: 'biz-pacific-freight',
-    buyer: 'Harbor Retail Group LLC',
-    buyerCountry: 'US',
-    amountMinor: 1_500_000,
-    currency: 'USD',
-    issuedAt: '2026-10-03',
-    dueInDays: 90,
-    buyerConfirmed: true,
-    title: 'Supply chain finance: electronic bill of lading',
-  },
-  {
-    number: 'EQ-2026-0077',
-    type: 'equipment',
-    borrowerId: 'biz-medina-textiles',
-    buyer: 'Telares Industriales S.A.',
-    buyerCountry: 'MX',
-    amountMinor: 2_000_000,
-    currency: 'USD',
-    issuedAt: '2026-09-28',
-    dueInDays: 180,
-    buyerConfirmed: true,
-    title: 'Equipment finance: 6 jacquard looms',
-  },
-  {
-    number: 'INV-2026-0388',
-    type: 'invoice',
-    borrowerId: 'biz-rapid-parts',
-    buyer: 'Gulf Auto Services LLC',
-    buyerCountry: 'AE',
-    amountMinor: 400_000,
-    currency: 'USD',
-    issuedAt: '2026-10-02',
-    dueInDays: 1,
-    buyerConfirmed: true,
-    title: 'Invoice advance: spare parts order',
-  },
-  {
-    number: 'INV-2026-0999',
-    type: 'invoice',
-    borrowerId: 'biz-sierra-verde',
-    buyer: 'Northbrook Trading Ltd',
-    buyerCountry: 'GB',
-    amountMinor: 5_000_000,
-    currency: 'EUR',
-    issuedAt: '2026-10-04',
-    dueInDays: 60,
-    buyerConfirmed: false,
-    title: 'Invoice advance: specialty coffee lot',
-  },
-]
+/**
+ * The bureau file for a registered company. Companies the bureau has no record of get a
+ * synthetic file derived from keccak256(country | registration number), so the same company
+ * always gets the same file.
+ */
+export function bureauFile(country: string, registrationNumber: string): CreditFile {
+  const reg = normalizeRegistration(registrationNumber)
+  const known = bureau.find((b) => b.country === country && normalizeRegistration(b.registrationNumber) === reg)
+  if (known) return known.credit
+  const h = keccak256(toHex(`${country}|${reg}`))
+  const word = (i: number) => parseInt(h.slice(2 + i * 4, 6 + i * 4), 16) // 16-bit words of the hash
+  const frac = (i: number) => word(i) / 0xffff
+  const annualRevenueUsd = Math.round((500_000 + frac(1) * 11_500_000) / 10_000) * 10_000
+  return {
+    yearsTrading: 2 + (word(0) % 13),
+    annualRevenueUsd,
+    onTimeRate: (82 + (word(2) % 18)) / 100,
+    avgDaysLate: word(3) % 10,
+    openDebtUsd: Math.round((annualRevenueUsd * (0.05 + frac(4) * 0.2)) / 1_000) * 1_000,
+    priorLoans: word(5) % 31,
+  }
+}
 
-export const lenders: Lender[] = [
-  {
-    id: 'lender-ana',
-    name: 'Ana Ruiz',
-    country: 'ES',
-    kycStatus: 'approved',
-    kycLevel: 'retail-verified',
-    wallet: A['ana'],
-    funding: 'fiat',
-    bankAccount: 'ES91 2100 0418 4502 0005 1332',
-  },
-  {
-    id: 'lender-ben',
-    name: 'Ben Carter',
-    country: 'US',
-    kycStatus: 'approved',
-    kycLevel: 'accredited',
-    wallet: A['ben'],
-    funding: 'stablecoin',
-  },
-  {
-    id: 'lender-chen',
-    name: 'Chen Wei',
-    country: 'SG',
-    kycStatus: 'pending',
-    kycLevel: 'none',
-    wallet: A['chen'],
-    funding: 'stablecoin',
-  },
-]
+/** KYC provider decision: deterministic in the sandbox. */
+export const KYC_BLOCKED_COUNTRIES = ['KP', 'IR', 'SY', 'CU']
+export function kycDecision(country: string, funding: 'fiat' | 'stablecoin') {
+  return {
+    status: KYC_BLOCKED_COUNTRIES.includes(country) ? ('rejected' as const) : ('approved' as const),
+    level: funding === 'fiat' ? 'retail-verified' : 'wallet-verified',
+  }
+}

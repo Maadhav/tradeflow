@@ -67,10 +67,12 @@ const onSchedule = (runtime: Runtime<Config>): string => {
           Action.LoanStatus,
           encodeAbiParameters(parseAbiParameters('uint256 loanId, uint8 newStatus, bool freezeBorrower'), [loanId, next, true]),
         )
+        runtime.log(`loan ${loanId} ${next === Status.Late ? 'is past maturity: marked late' : 'is past the grace period: marked defaulted'}, business frozen`)
         actions.push({ loanId, status: next === Status.Late ? 'late' : 'defaulted', businessFrozen: true, tx })
       }
     }
   }
+  runtime.log(`loan health: ${count} loan${count === 1n ? '' : 's'} checked, ${actions.length} status change${actions.length === 1 ? '' : 's'}`)
 
   // ---- 2. Three-way reconciliation ----
   const apiKey = runtime.getSecret({ id: runtime.config.apiKeySecretId }).result().value
@@ -98,6 +100,11 @@ const onSchedule = (runtime: Runtime<Config>): string => {
   const onrampMatchesChain = stablecoinsMinted === creditedOnchain
   const solvent = held >= reserved
   const okAll = bankMatchesOnramp && onrampMatchesChain && solvent
+  runtime.log(
+    okAll
+      ? 'reconciliation: bank books, on-ramp books and the market agree, market is solvent'
+      : `reconciliation: mismatch (${[!bankMatchesOnramp && 'bank vs on-ramp', !onrampMatchesChain && 'on-ramp vs market', !solvent && 'solvency'].filter(Boolean).join(', ')}), pausing new funding`,
+  )
   const snapshotHash = keccak256(
     encodeAbiParameters(parseAbiParameters('uint256,uint256,uint256,uint256,uint256,uint256'), [
       cashAtBank,

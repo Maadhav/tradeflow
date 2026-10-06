@@ -26886,6 +26886,7 @@ var marketAbi = parseAbi([
   "function totalFiatIn() view returns (uint256)",
   "function unallocated() view returns (uint256)",
   "function secondsPerDay() view returns (uint32)",
+  "function usedRef(bytes32 ref) view returns (bool)",
   "function loanStates(uint256 fromId, uint256 toId) view returns (uint8[] statuses, uint64[] maturities, uint256[] funded, uint256[] fiatFunded)",
   "function getLoan(uint256 loanId) view returns ((address borrower, uint8 assetType, uint8 riskGrade, bytes3 currency, uint8 status, uint32 aprBps, uint32 tenorDays, uint64 listedAt, uint64 fundedAt, uint64 disbursedAt, uint64 maturity, uint64 repaidAt, uint256 faceValueMinor, uint256 fxRateE8, uint256 target, uint256 funded, uint256 fiatFunded, uint256 repaidAmount, bytes32 docHash, string ref))"
 ]);
@@ -26972,6 +26973,7 @@ var onSubmission = (runtime, payload) => {
   if (!ok(creditRes))
     throw new Error(`credit bureau HTTP ${creditRes.statusCode}`);
   const credit = json(creditRes);
+  runtime.log("credit file received");
   const regRes = http.sendRequest(runtime, {
     url: `${base}/v1/registry/verify`,
     method: "POST",
@@ -26981,6 +26983,7 @@ var onSubmission = (runtime, payload) => {
   if (!ok(regRes))
     throw new Error(`registry HTTP ${regRes.statusCode}`);
   const reg = json(regRes);
+  runtime.log(!reg.valid ? "registry: document not found for this business" : reg.disputed ? "registry: document found, buyer disputed" : reg.buyerConfirmed ? "registry: document found, buyer confirmed" : "registry: document found, not yet confirmed by the buyer");
   const sanRes = http.sendRequest(runtime, {
     url: `${base}/v1/sanctions/screen`,
     method: "POST",
@@ -26990,16 +26993,23 @@ var onSubmission = (runtime, payload) => {
   if (!ok(sanRes))
     throw new Error(`sanctions HTTP ${sanRes.statusCode}`);
   const sanctions = json(sanRes);
-  const rejection = !reg.valid ? `document rejected: ${reg.reason ?? "not found"}` : !reg.buyerConfirmed ? "buyer has not confirmed the document" : sanctions.match ? "sanctions screening match" : undefined;
+  runtime.log(`sanctions screening: ${sanctions.match ? "match" : "no match"}`);
+  const rejection = !reg.valid ? `document rejected: ${reg.reason ?? "not found"}` : reg.disputed ? "buyer disputed the document" : !reg.buyerConfirmed ? "buyer has not confirmed the document" : sanctions.match ? "sanctions screening match" : undefined;
   const card = scorecard(credit, runtime.config.minScore);
+  if (!rejection)
+    runtime.log(`scorecard: grade ${"ABCDE"[card.grade - 1]}, ${card.approved ? "approved" : "below policy"}`);
   const don = runtime.usingTheDons();
-  if (rejection || !card.approved) {
-    const reason = rejection ?? `credit grade below policy (grade ${card.grade})`;
+  const reject = (reason) => {
     don.log(`listing rejected for ${req.docNumber}: ${reason}`);
     return JSON.stringify({ listed: false, docNumber: req.docNumber, reason });
-  }
+  };
+  if (rejection || !card.approved)
+    return reject(rejection ?? `credit grade ${"ABCDE"[card.grade - 1]} is below the minimum for financing`);
+  if (read2(don, runtime.config.market, marketAbi, "usedRef", [reg.docHash]))
+    return reject("document already financed");
   const currency = reg.currency;
   const fxRateE8 = currency === "USD" ? 100000000n : readEurUsd(don);
+  don.log(currency === "USD" ? "USD document, no conversion needed" : `EUR/USD ${(Number(fxRateE8) / 1e8).toFixed(4)} from the data feed`);
   const faceValueMinor = BigInt(reg.amountMinor);
   const faceUsd6 = toUsd6(faceValueMinor, fxRateE8);
   const advanceUsd6 = faceUsd6 * BigInt(card.advanceBps) / 10000n / 1000000n * 1000000n;

@@ -26905,6 +26905,7 @@ var marketAbi = parseAbi([
   "function totalFiatIn() view returns (uint256)",
   "function unallocated() view returns (uint256)",
   "function secondsPerDay() view returns (uint32)",
+  "function usedRef(bytes32 ref) view returns (bool)",
   "function loanStates(uint256 fromId, uint256 toId) view returns (uint8[] statuses, uint64[] maturities, uint256[] funded, uint256[] fiatFunded)",
   "function getLoan(uint256 loanId) view returns ((address borrower, uint8 assetType, uint8 riskGrade, bytes3 currency, uint8 status, uint32 aprBps, uint32 tenorDays, uint64 listedAt, uint64 fundedAt, uint64 disbursedAt, uint64 maturity, uint64 repaidAt, uint256 faceValueMinor, uint256 fxRateE8, uint256 target, uint256 funded, uint256 fiatFunded, uint256 repaidAmount, bytes32 docHash, string ref))"
 ]);
@@ -26976,10 +26977,12 @@ var onSchedule = (runtime) => {
         next = Status.Defaulted;
       if (next !== undefined) {
         const tx = writeAction(runtime, Action.LoanStatus, encodeAbiParameters(parseAbiParameters("uint256 loanId, uint8 newStatus, bool freezeBorrower"), [loanId, next, true]));
+        runtime.log(`loan ${loanId} ${next === Status.Late ? "is past maturity: marked late" : "is past the grace period: marked defaulted"}, business frozen`);
         actions.push({ loanId, status: next === Status.Late ? "late" : "defaulted", businessFrozen: true, tx });
       }
     }
   }
+  runtime.log(`loan health: ${count} loan${count === 1n ? "" : "s"} checked, ${actions.length} status change${actions.length === 1 ? "" : "s"}`);
   const apiKey = runtime.getSecret({ id: runtime.config.apiKeySecretId }).result().value;
   const fetchBooks = (sender, key) => {
     const res = sender.sendRequest({ url: `${runtime.config.railsUrl}/v1/ledger/summary`, method: "GET", headers: { "x-api-key": key } }).result();
@@ -26998,6 +27001,7 @@ var onSchedule = (runtime) => {
   const onrampMatchesChain = stablecoinsMinted === creditedOnchain;
   const solvent = held >= reserved;
   const okAll = bankMatchesOnramp && onrampMatchesChain && solvent;
+  runtime.log(okAll ? "reconciliation: bank books, on-ramp books and the market agree, market is solvent" : `reconciliation: mismatch (${[!bankMatchesOnramp && "bank vs on-ramp", !onrampMatchesChain && "on-ramp vs market", !solvent && "solvency"].filter(Boolean).join(", ")}), pausing new funding`);
   const snapshotHash = keccak256(encodeAbiParameters(parseAbiParameters("uint256,uint256,uint256,uint256,uint256,uint256"), [
     cashAtBank,
     stablecoinsMinted,

@@ -1,12 +1,14 @@
 // Listing workflow: verify a financing request and list it onchain.
 //
-// Trigger: HTTP (the business submits a document for financing).
-// Runs inside a TEE (Confidential Workflow): the business's credit file, the document
-// registry response and the sanctions result are fetched and scored in the enclave, so node
-// operators never see the private financial data. Only derived values cross back to the DON:
-// risk grade, APR, advance amount and a document hash.
-// Then, on the DON: read Chainlink's EUR/USD Data Feed to price non-USD documents, build the
-// ListLoan report and deliver it to TradeflowMarket through the CRE forwarder.
+// Trigger: HTTP (the buyer has confirmed or disputed a document the business entered).
+// The handler is declared for TEE execution (handlerInTee, AWS Nitro): on a deployed DON the
+// business's credit file, the document registry response and the sanctions result are fetched
+// and scored inside the enclave, so node operators never see the private financial data. Only
+// derived values cross back to the DON: risk grade, APR, advance amount and a document hash.
+// `cre workflow simulate` runs the same handler locally, outside any enclave.
+// Then, on the DON: check the market has not financed this document already, read Chainlink's
+// EUR/USD Data Feed to price non-USD documents, build the ListLoan report and deliver it to
+// TradeflowMarket through the CRE forwarder.
 
 import {
   HTTPCapability,
@@ -21,7 +23,7 @@ import {
 } from '@chainlink/cre-sdk'
 import { encodeAbiParameters, parseAbiParameters, toHex, type Address, type Hex } from 'viem'
 import { z } from 'zod'
-import { Action, baseConfig, bigintJson, decodeInput, readEurUsd, toUsd6, writeAction } from './lib'
+import { Action, baseConfig, bigintJson, decodeInput, marketAbi, read, readEurUsd, toUsd6, writeAction } from './lib'
 
 const configSchema = baseConfig.extend({
   authorizedKeys: z.array(z.string()),
@@ -46,7 +48,9 @@ type Credit = {
 type Registry = {
   valid: boolean
   reason?: string
+  status?: 'awaiting_buyer' | 'confirmed' | 'disputed'
   buyerConfirmed?: boolean
+  disputed?: boolean
   docType?: 'invoice' | 'bill_of_lading' | 'equipment' | 'working_capital'
   buyer?: string
   amountMinor?: number
@@ -57,7 +61,7 @@ type Registry = {
 
 const ASSET_TYPE: Record<string, number> = { invoice: 0, bill_of_lading: 1, equipment: 2, working_capital: 3 }
 
-/** Credit scorecard, evaluated only inside the enclave. Returns grade 1 (A) .. 5 (E). */
+/** Credit scorecard, evaluated only inside the enclave on a deployed DON. Returns grade 1 (A) .. 5 (E). */
 function scorecard(c: Credit, minScore: number) {
   const years = Math.min(c.yearsTrading, 10)
   const debtRatio = c.annualRevenueUsd > 0 ? c.openDebtUsd / c.annualRevenueUsd : 1
@@ -77,10 +81,11 @@ const onSubmission = (runtime: TeeRuntime<Config>, payload: HTTPPayload): string
   const headers = { 'x-api-key': { values: [apiKey] }, 'content-type': { values: ['application/json'] } }
   const base = runtime.config.railsUrl
 
-  // ---- Inside the enclave: private data ----
+  // ---- Inside the enclave on a deployed DON: private data ----
   const creditRes = http.sendRequest(runtime, { url: `${base}/v1/credit/${req.borrowerId}`, method: 'GET', multiHeaders: headers }).result()
   if (!ok(creditRes)) throw new Error(`credit bureau HTTP ${creditRes.statusCode}`)
   const credit = json(creditRes) as Credit
+  runtime.log('credit file received')
 
   const regRes = http
     .sendRequest(runtime, {
@@ -92,6 +97,15 @@ const onSubmission = (runtime: TeeRuntime<Config>, payload: HTTPPayload): string
     .result()
   if (!ok(regRes)) throw new Error(`registry HTTP ${regRes.statusCode}`)
   const reg = json(regRes) as Registry
+  runtime.log(
+    !reg.valid
+      ? 'registry: document not found for this business'
+      : reg.disputed
+        ? 'registry: document found, buyer disputed'
+        : reg.buyerConfirmed
+          ? 'registry: document found, buyer confirmed'
+          : 'registry: document found, not yet confirmed by the buyer',
+  )
 
   const sanRes = http
     .sendRequest(runtime, {
@@ -103,26 +117,34 @@ const onSubmission = (runtime: TeeRuntime<Config>, payload: HTTPPayload): string
     .result()
   if (!ok(sanRes)) throw new Error(`sanctions HTTP ${sanRes.statusCode}`)
   const sanctions = json(sanRes) as { match: boolean }
+  runtime.log(`sanctions screening: ${sanctions.match ? 'match' : 'no match'}`)
 
   const rejection = !reg.valid
     ? `document rejected: ${reg.reason ?? 'not found'}`
-    : !reg.buyerConfirmed
-      ? 'buyer has not confirmed the document'
-      : sanctions.match
-        ? 'sanctions screening match'
-        : undefined
+    : reg.disputed
+      ? 'buyer disputed the document'
+      : !reg.buyerConfirmed
+        ? 'buyer has not confirmed the document'
+        : sanctions.match
+          ? 'sanctions screening match'
+          : undefined
   const card = scorecard(credit, runtime.config.minScore)
+  if (!rejection) runtime.log(`scorecard: grade ${'ABCDE'[card.grade - 1]}, ${card.approved ? 'approved' : 'below policy'}`)
 
   // ---- Cross back to the DON with derived values only ----
   const don = runtime.usingTheDons()
-  if (rejection || !card.approved) {
-    const reason = rejection ?? `credit grade below policy (grade ${card.grade})`
+  const reject = (reason: string) => {
     don.log(`listing rejected for ${req.docNumber}: ${reason}`)
     return JSON.stringify({ listed: false, docNumber: req.docNumber, reason })
   }
+  if (rejection || !card.approved) return reject(rejection ?? `credit grade ${'ABCDE'[card.grade - 1]} is below the minimum for financing`)
+
+  // The market refuses a document hash it has seen before; check first and reject without a write.
+  if (read<boolean>(don, runtime.config.market, marketAbi, 'usedRef', [reg.docHash!])) return reject('document already financed')
 
   const currency = reg.currency!
   const fxRateE8 = currency === 'USD' ? 100_000_000n : readEurUsd(don)
+  don.log(currency === 'USD' ? 'USD document, no conversion needed' : `EUR/USD ${(Number(fxRateE8) / 1e8).toFixed(4)} from the data feed`)
   const faceValueMinor = BigInt(reg.amountMinor!)
   const faceUsd6 = toUsd6(faceValueMinor, fxRateE8)
   const advanceUsd6 = ((faceUsd6 * BigInt(card.advanceBps)) / 10_000n / 1_000_000n) * 1_000_000n // whole dollars
