@@ -5,18 +5,19 @@ Compiling workflow...
 ✓ Workflow compiled
 ✓ Simulation limits enabled
   HTTP: req=120kb resp=250kb timeout=10s | ConfHTTP: req=125kb resp=500kb timeout=1m30s | Consensus obs=25kb | ChainWrite evm_report=50kb evm_gas=10000000 solana_report=265b solana_cu=300000 | WASM binary=100mb compressed=20mb
-  Binary hash: 253ea813afc00ba48910878520129c827515cd01f3cdb5608e80314de010ecf5
-  Config hash: 07f5c456a39bf5e8e833455e93800a0e63b79869a8190cda0fce42d6272d29bc
+  Binary hash: ebe1c50677d3a4f4bf3962de31e9489d268e30ae6011c81aaabe20a48b2fe75f
+  Config hash: 56e178e8bbdfa66730c744471b115e5f4f0db1dbce5d2cc1f9972275eb2d297e
 ✓ Parsed JSON input successfully
 ✓ Created HTTP trigger payload with 1 fields
-2026-10-06T22:54:01Z [SIMULATION] Simulator Initialized
-2026-10-06T22:54:01Z [SIMULATION] Running trigger trigger=http-trigger@1.0.0-alpha
-2026-10-06T22:54:01Z [USER LOG] KYC file received: approved
-2026-10-06T22:54:13Z [USER LOG] report delivered: action=2 tx=0x80dbaba98b227a5aedbaafcace0f60733272ba957c0d7f93b3ce99120585cadf
+2026-10-07T13:57:28Z [SIMULATION] Simulator Initialized
+2026-10-07T13:57:28Z [SIMULATION] Running trigger trigger=http-trigger@1.0.0-alpha
+2026-10-07T13:57:28Z [USER LOG] KYC file received: approved
+2026-10-07T13:57:37Z [USER LOG] report delivered: action=2 tx=0x25fefa23a4e356dca7ba09491fbc5b8aab19dee3fd11d06301ae4cf971be1c65
+2026-10-07T13:57:38Z [USER LOG] KYC claim issued, wallet registered in the ERC-3643 identity registry (country 840)
 ✓ Workflow Simulation Result:
-"{\"verified\":true,\"lenderId\":\"lender-ben-carter-rio9\",\"wallet\":\"0xc6DaAC7A1Eb1AA94124FC540Bf3Ec127847af91A\",\"level\":\"wallet-verified\",\"tx\":\"0x80dbaba98b227a5aedbaafcace0f60733272ba957c0d7f93b3ce99120585cadf\"}"
-2026-10-06T22:54:13Z [SIMULATION] Execution finished signal received
-2026-10-06T22:54:13Z [SIMULATION] Skipping WorkflowEngineV2
+"{\"verified\":true,\"lenderId\":\"lender-ben-carter-lm3c\",\"wallet\":\"0xc6DaAC7A1Eb1AA94124FC540Bf3Ec127847af91A\",\"level\":\"wallet-verified\",\"country\":840,\"identityVerified\":true,\"tx\":\"0x25fefa23a4e356dca7ba09491fbc5b8aab19dee3fd11d06301ae4cf971be1c65\"}"
+2026-10-07T13:57:38Z [SIMULATION] Execution finished signal received
+2026-10-07T13:57:38Z [SIMULATION] Skipping WorkflowEngineV2
 ╭──────────────────────────────────────────────────────╮
 │ Simulation complete! Ready to deploy your workflow?  │
 │                                                      │

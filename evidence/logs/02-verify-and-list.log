@@ -5,12 +5,12 @@ Compiling workflow...
 ✓ Workflow compiled
 ✓ Simulation limits enabled
   HTTP: req=120kb resp=250kb timeout=10s | ConfHTTP: req=125kb resp=500kb timeout=1m30s | Consensus obs=25kb | ChainWrite evm_report=50kb evm_gas=10000000 solana_report=265b solana_cu=300000 | WASM binary=100mb compressed=20mb
-  Binary hash: dd4a932ef711da10731858a7a0999088dbbf0a569ebe9f4afaeed68ce8a1839f
-  Config hash: 0efe81ee7c63a4507364ed5786e05d9439687033e28f4222354125753f5b6e1a
+  Binary hash: 10bf6dd22c78a7325794dc37e8ab94c1de507a7323ba2c51fe8a21098d600f61
+  Config hash: 74715e6e24c33d18eea2a615f7e78cd60fc6fd4e4bcd86d98e92ff2a9f97f9f8
 ✓ Parsed JSON input successfully
 ✓ Created HTTP trigger payload with 3 fields
-2026-10-06T22:52:10Z [SIMULATION] Simulator Initialized
-2026-10-06T22:52:10Z [SIMULATION] Running trigger trigger=http-trigger@1.0.0-alpha
+2026-10-07T13:55:26Z [SIMULATION] Simulator Initialized
+2026-10-07T13:55:26Z [SIMULATION] Running trigger trigger=http-trigger@1.0.0-alpha
 ╭────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Trigger requested TEE Execution your trigger will run in one of the following Tees:                │
 │     - AWS Nitro in us-west-2                                                                       │
@@ -20,14 +20,14 @@ Compiling workflow...
 │ They are presented in the simulator for debugging only.                                            │
 │                                                                                                    │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────╯
-2026-10-06T22:52:10Z [USER LOG] credit file received
-2026-10-06T22:52:10Z [USER LOG] registry: document found, buyer disputed
-2026-10-06T22:52:10Z [USER LOG] sanctions screening: no match
-2026-10-06T22:52:10Z [USER LOG] listing rejected for INV-2026-0999: buyer disputed the document
+2026-10-07T13:55:26Z [USER LOG] credit file received
+2026-10-07T13:55:26Z [USER LOG] registry: document found, buyer disputed
+2026-10-07T13:55:26Z [USER LOG] sanctions screening: no match
+2026-10-07T13:55:26Z [USER LOG] listing rejected for INV-2026-0999: buyer disputed the document
 ✓ Workflow Simulation Result:
 "{\"listed\":false,\"docNumber\":\"INV-2026-0999\",\"reason\":\"buyer disputed the document\"}"
-2026-10-06T22:52:10Z [SIMULATION] Execution finished signal received
-2026-10-06T22:52:10Z [SIMULATION] Skipping WorkflowEngineV2
+2026-10-07T13:55:26Z [SIMULATION] Execution finished signal received
+2026-10-07T13:55:26Z [SIMULATION] Skipping WorkflowEngineV2
 ╭──────────────────────────────────────────────────────╮
 │ Simulation complete! Ready to deploy your workflow?  │
 │                                                      │

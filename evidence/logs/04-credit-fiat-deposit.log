@@ -5,21 +5,22 @@ Compiling workflow...
 ✓ Workflow compiled
 ✓ Simulation limits enabled
   HTTP: req=120kb resp=250kb timeout=10s | ConfHTTP: req=125kb resp=500kb timeout=1m30s | Consensus obs=25kb | ChainWrite evm_report=50kb evm_gas=10000000 solana_report=265b solana_cu=300000 | WASM binary=100mb compressed=20mb
-  Binary hash: 253ea813afc00ba48910878520129c827515cd01f3cdb5608e80314de010ecf5
-  Config hash: 07f5c456a39bf5e8e833455e93800a0e63b79869a8190cda0fce42d6272d29bc
+  Binary hash: ebe1c50677d3a4f4bf3962de31e9489d268e30ae6011c81aaabe20a48b2fe75f
+  Config hash: 56e178e8bbdfa66730c744471b115e5f4f0db1dbce5d2cc1f9972275eb2d297e
 ✓ Parsed JSON input successfully
 ✓ Created HTTP trigger payload with 1 fields
-2026-10-06T22:53:19Z [SIMULATION] Simulator Initialized
-2026-10-06T22:53:19Z [SIMULATION] Running trigger trigger=http-trigger@1.0.0-alpha
-2026-10-06T22:53:19Z [USER LOG] on-ramp: deposit settled and minted to the market
-2026-10-06T22:53:19Z [USER LOG] KYC file approved and matches the deposit wallet
-2026-10-06T22:53:20Z [USER LOG] EUR/USD 1.1270 from the data feed, on-ramp rate 20 bps off (limit 100)
-2026-10-06T22:53:20Z [USER LOG] stablecoin amount recomputed and found in the market
-2026-10-06T22:53:25Z [USER LOG] report delivered: action=3 tx=0x46d34b57e56c416432a10c5279907bf6a9a40b31f9041ba4e79b7fcd4a13529d
+2026-10-07T13:56:34Z [SIMULATION] Simulator Initialized
+2026-10-07T13:56:34Z [SIMULATION] Running trigger trigger=http-trigger@1.0.0-alpha
+2026-10-07T13:56:34Z [USER LOG] on-ramp: deposit settled and minted to the market
+2026-10-07T13:56:34Z [USER LOG] KYC file approved and matches the deposit wallet
+2026-10-07T13:56:34Z [USER LOG] EUR/USD 1.1270 from the data feed, on-ramp rate 20 bps off (limit 100)
+2026-10-07T13:56:35Z [USER LOG] stablecoin amount recomputed and found in the market
+2026-10-07T13:56:48Z [USER LOG] report delivered: action=3 tx=0x08b795b27c7820f40bd3b362bcdecab482a3c1ebf116aa443858354a1b0855a2
+2026-10-07T13:56:49Z [USER LOG] loan notes minted: 3374.31 TFN1 (ERC-3643) to the lender's wallet
 ✓ Workflow Simulation Result:
-"{\"credited\":true,\"reference\":\"TF-MUWST41I\",\"loanId\":1,\"lender\":\"lender-ana-ruiz-u4ap\",\"fiat\":\"3000 EUR\",\"providerRate\":\"112477095\",\"chainlinkRate\":\"112702500\",\"stablecoins\":\"3374312850\",\"tx\":\"0x46d34b57e56c416432a10c5279907bf6a9a40b31f9041ba4e79b7fcd4a13529d\"}"
-2026-10-06T22:53:25Z [SIMULATION] Execution finished signal received
-2026-10-06T22:53:25Z [SIMULATION] Skipping WorkflowEngineV2
+"{\"credited\":true,\"reference\":\"TF-MUXP2NLO\",\"loanId\":1,\"token\":\"0x1fE364144C7C57843929A500e34a53558160ecc6\",\"notesMinted\":\"3374312850\",\"lender\":\"lender-ana-ruiz-sutw\",\"fiat\":\"3000 EUR\",\"providerRate\":\"112477095\",\"chainlinkRate\":\"112702500\",\"stablecoins\":\"3374312850\",\"tx\":\"0x08b795b27c7820f40bd3b362bcdecab482a3c1ebf116aa443858354a1b0855a2\"}"
+2026-10-07T13:56:49Z [SIMULATION] Execution finished signal received
+2026-10-07T13:56:49Z [SIMULATION] Skipping WorkflowEngineV2
 ╭──────────────────────────────────────────────────────╮
 │ Simulation complete! Ready to deploy your workflow?  │
 │                                                      │

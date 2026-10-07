@@ -5,19 +5,19 @@ Compiling workflow...
 ✓ Workflow compiled
 ✓ Simulation limits enabled
   HTTP: req=120kb resp=250kb timeout=10s | ConfHTTP: req=125kb resp=500kb timeout=1m30s | Consensus obs=25kb | ChainWrite evm_report=50kb evm_gas=10000000 solana_report=265b solana_cu=300000 | WASM binary=100mb compressed=20mb
-  Binary hash: db9ca6ba78a69e106aea234d5e677e7bbb66c395577a93bb94319db9690fa598
-  Config hash: 02427c83911ddd58a422f6e78fbe8052665a15e2818d55c5aed12b888bee6fd3
-2026-10-06T23:01:55Z [SIMULATION] Simulator Initialized
-2026-10-06T23:01:55Z [SIMULATION] Running trigger trigger=cron-trigger@1.0.0
-2026-10-06T23:02:01Z [USER LOG] report delivered: action=7 tx=0xc5ff35595c249ec8c0ebc5f043da0c7be8d148eab726ec7364a203aca3b34287
-2026-10-06T23:02:01Z [USER LOG] loan 2 is past maturity: marked late, business frozen
-2026-10-06T23:02:01Z [USER LOG] loan health: 2 loans checked, 1 status change
-2026-10-06T23:02:02Z [USER LOG] reconciliation: bank books, on-ramp books and the market agree, market is solvent
-2026-10-06T23:02:27Z [USER LOG] report delivered: action=8 tx=0xdc633f6d2491981a2eaa3ae4c5c854a8f7999e64198a5ab625f63de9f2d432d7
+  Binary hash: 238c8c51fc5012b45fb6886c30fbdc6d68c8db3e5c5374b2e74619a8be038e3b
+  Config hash: 1bda56bcb0690780d787fb6a6421798b75ce7a94983dbc4f32b338a8c3a0f178
+2026-10-07T14:05:56Z [SIMULATION] Simulator Initialized
+2026-10-07T14:05:56Z [SIMULATION] Running trigger trigger=cron-trigger@1.0.0
+2026-10-07T14:06:03Z [USER LOG] report delivered: action=7 tx=0x856494de178665d946383f96aa0f3cfb642e30100d09c27da8c3aba9486dced8
+2026-10-07T14:06:03Z [USER LOG] loan 2 is past maturity: marked late, business frozen, ERC-3643 token TFN2 paused
+2026-10-07T14:06:03Z [USER LOG] loan health: 2 loans checked, 1 status change
+2026-10-07T14:06:04Z [USER LOG] reconciliation: bank books, on-ramp books and the market agree, market is solvent
+2026-10-07T14:06:15Z [USER LOG] report delivered: action=8 tx=0xd9c1f92e77e073f36e97d72c547f40ab0a299a0d8db9bb249ca3dc0b2cef2ce9
 ✓ Workflow Simulation Result:
-"{\"checkedAt\":\"2026-10-06T15:02:27.878Z\",\"loans\":\"2\",\"statusChanges\":[{\"loanId\":\"2\",\"status\":\"late\",\"businessFrozen\":true,\"tx\":\"0xc5ff35595c249ec8c0ebc5f043da0c7be8d148eab726ec7364a203aca3b34287\"}],\"reconciliation\":{\"ok\":true,\"cashAtBank\":\"3374312850\",\"stablecoinsMinted\":\"3374312850\",\"creditedOnchain\":\"3374312850\",\"stablecoinsHeld\":\"1\",\"reserved\":\"1\",\"checks\":{\"bankMatchesOnramp\":true,\"onrampMatchesChain\":true,\"solvent\":true},\"tx\":\"0xdc633f6d2491981a2eaa3ae4c5c854a8f7999e64198a5ab625f63de9f2d432d7\"}}"
-2026-10-06T23:02:27Z [SIMULATION] Execution finished signal received
-2026-10-06T23:02:27Z [SIMULATION] Skipping WorkflowEngineV2
+"{\"checkedAt\":\"2026-10-07T06:06:15.912Z\",\"loans\":\"2\",\"statusChanges\":[{\"loanId\":\"2\",\"status\":\"late\",\"businessFrozen\":true,\"tokenPaused\":true,\"tx\":\"0x856494de178665d946383f96aa0f3cfb642e30100d09c27da8c3aba9486dced8\"}],\"reconciliation\":{\"ok\":true,\"cashAtBank\":\"3374312850\",\"stablecoinsMinted\":\"3374312850\",\"creditedOnchain\":\"3374312850\",\"stablecoinsHeld\":\"1\",\"reserved\":\"1\",\"checks\":{\"bankMatchesOnramp\":true,\"onrampMatchesChain\":true,\"solvent\":true},\"tx\":\"0xd9c1f92e77e073f36e97d72c547f40ab0a299a0d8db9bb249ca3dc0b2cef2ce9\"}}"
+2026-10-07T14:06:15Z [SIMULATION] Execution finished signal received
+2026-10-07T14:06:15Z [SIMULATION] Skipping WorkflowEngineV2
 ╭──────────────────────────────────────────────────────╮
 │ Simulation complete! Ready to deploy your workflow?  │
 │                                                      │
