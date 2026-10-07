@@ -13,7 +13,7 @@
 // deployments only) that sign a strict allowlist of calls, runs the CRE workflows through the CLI
 // simulator and serves the web app.
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import {
   BaseError,
@@ -31,7 +31,7 @@ import {
 } from 'viem'
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
 import { bureauFile, kycDecision, normalizeRegistration } from './seed'
-import { makeChain, marketAbi, walletAbi, errorsAbi, type Deployment } from './chain'
+import { makeChain, marketAbi, walletAbi, errorsAbi, loanTokenAbi, type Deployment } from './chain'
 import { makeBridge, type WorkflowRun } from './bridge'
 import index from './web/index.html'
 
@@ -66,6 +66,8 @@ const BUILTIN_WALLETS = DEPLOYMENT === 'local'
 // State (persisted to a JSON file so restarts keep the history)
 // ---------------------------------------------------------------------------
 
+/** A sign-in key handed to a browser: only its sha256 is kept, with when it was issued and last used. */
+type SessionKey = { hash: string; issuedAt: number; usedAt: number; unproven?: boolean }
 type Business = {
   id: string
   name: string
@@ -74,7 +76,7 @@ type Business = {
   bankAccount: string
   email: string
   wallet: Address // fresh EOA generated here; the key is in the custody file
-  sessionHashes: string[] // sha256 of the sign-in keys handed to this business's browsers
+  sessions: SessionKey[] // the sign-in keys handed to this business's browsers
   createdAt: string
 }
 type DocType = 'invoice' | 'bill_of_lading' | 'equipment'
@@ -113,6 +115,7 @@ type Lender = {
   bankAccount?: string
   kycStatus: 'approved' | 'pending' | 'rejected'
   kycLevel: string
+  sessions: SessionKey[] // the sign-in keys handed to this investor's browsers
   createdAt: string
 }
 type Intent = {
@@ -144,6 +147,7 @@ type State = {
   listings: Listing[]
   ledgerAdjustments: { at: string; note: string; usd6: string }[]
   runs: WorkflowRun[]
+  deployBlock?: { market: string; block: string } // where the market's event history starts, pinned once known
 }
 
 const DATA_DIR = `${import.meta.dir}/data`
@@ -157,7 +161,11 @@ const state = loaded as State
 for (const key of ['businesses', 'documents', 'lenders', 'intents', 'payouts', 'bankCredits', 'pspPayments', 'listings', 'ledgerAdjustments', 'runs'] as const) {
   if (!Array.isArray(state[key])) (state as Record<string, unknown>)[key] = [] // older state files lack the newer arrays
 }
-for (const b of state.businesses) if (!Array.isArray(b.sessionHashes)) b.sessionHashes = []
+// Older state files keep only the key hashes: those keys stay valid, as if issued now.
+for (const a of [...state.businesses, ...state.lenders] as (Business & { sessionHashes?: string[] })[]) {
+  if (!Array.isArray(a.sessions)) a.sessions = (a.sessionHashes ?? []).map((hash) => ({ hash, issuedAt: Date.now(), usedAt: Date.now() }))
+  delete a.sessionHashes
+}
 // The run queue lives in memory, so a run that was queued or running when the server stopped will
 // never finish. Record it as failed, so it can be started again.
 for (const r of state.runs) {
@@ -381,18 +389,56 @@ const docByToken = (token: string) =>
 function signedIn(req: Request, businessId: unknown): Business {
   const business = typeof businessId === 'string' ? state.businesses.find((x) => x.id === businessId) : undefined
   if (!business) fail(404, 'We could not find this business account. Sign in again to continue.')
-  const key = req.headers.get('x-business-key') ?? ''
-  if (!key || !business.sessionHashes.some((h) => sameHash(h, sha256(key)))) {
+  if (!sessionFor(business, req.headers.get('x-business-key'))) {
     fail(401, 'This browser is no longer signed in to the business account. Sign in again to continue.')
   }
   return business
 }
-/** A new sign-in key for a business (the newest ten stay valid). */
-function issueSession(b: Business): string {
+
+// Sign-in keys expire when a browser has not used them for SESSION_IDLE_MS, not by count. An account
+// keeps at most SESSION_CAP keys, dropping the least recently used, so a browser in use is never
+// pushed out. A sign-in that proves nothing but an email (or a registration number) is limited to
+// UNPROVEN_PER_HOUR per account, so it takes many hours of such sign-ins to push out even an idle key.
+const SESSION_IDLE_MS = 30 * DAY_MS
+const SESSION_CAP = 50
+const UNPROVEN_PER_HOUR = 10
+const HOUR_MS = 3_600_000
+const USED_AT_STEP_MS = 10 * 60_000 // a key's last use is saved to disk at most this often
+type Account = { sessions: SessionKey[] }
+
+/** The live session of the key a browser sent, its last use refreshed; undefined when the key is unknown or expired. */
+function sessionFor(account: Account, key: string | null): SessionKey | undefined {
+  if (!key) return undefined
+  const now = Date.now()
+  const hash = sha256(key)
+  const session = account.sessions.find((s) => sameHash(s.hash, hash) && now - s.usedAt < SESSION_IDLE_MS)
+  if (session) {
+    const stale = now - session.usedAt > USED_AT_STEP_MS
+    session.usedAt = now
+    if (stale) persist()
+  }
+  return session
+}
+/** A new sign-in key for a business or an investor. `unproven`: the caller proved only an email or a registration number. */
+function issueSession(account: Account, opts: { unproven?: boolean } = {}): string {
+  const now = Date.now()
+  const live = account.sessions.filter((s) => now - s.usedAt < SESSION_IDLE_MS)
+  if (opts.unproven && live.filter((s) => s.unproven && now - s.issuedAt < HOUR_MS).length >= UNPROVEN_PER_HOUR) {
+    fail(429, 'This account has been signed in too many times in the last hour. Wait an hour, then sign in again.')
+  }
+  const kept = live.sort((a, b) => b.usedAt - a.usedAt).slice(0, SESSION_CAP - 1)
   const key = newSecret()
-  b.sessionHashes = [sha256(key), ...b.sessionHashes].slice(0, 10)
+  account.sessions = [{ hash: sha256(key), issuedAt: now, usedAt: now, ...(opts.unproven ? { unproven: true } : {}) }, ...kept]
   persist()
   return key
+}
+/** Signing out: the key the browser sent stops working. */
+function endSession(account: Account, key: string | null) {
+  if (!key) return
+  const hash = sha256(key)
+  const before = account.sessions.length
+  account.sessions = account.sessions.filter((s) => !sameHash(s.hash, hash))
+  if (account.sessions.length !== before) persist()
 }
 
 /** Where the review of a document stands: a run in flight, else the outcome saved when the last run ended. */
@@ -591,19 +637,115 @@ const FULLY_FUNDED = topic('LoanFullyFunded(uint256,address,uint256)')
 const REPAID = topic('Repaid(uint256,uint256,bytes32)')
 let lastBlock = await chain.publicClient.getBlockNumber()
 
-/** First block where the market has code (binary search), so event queries start there. */
+/**
+ * The block the market was deployed in, where its event history starts. Pinned once known: DEPLOY_BLOCK,
+ * else the block kept in state for this market, else the receipt of the deploy transaction that forge
+ * saved, else a search of the chain. A pruning RPC cannot say whether the market existed at an old
+ * block, so a search that met such a block is used for this run only and never kept.
+ */
 async function findDeployBlock(): Promise<bigint> {
+  if (process.env.DEPLOY_BLOCK) return BigInt(process.env.DEPLOY_BLOCK)
+  const market = deployment.market.toLowerCase()
+  if (state.deployBlock?.market.toLowerCase() === market) return BigInt(state.deployBlock.block)
+  const found = (await deployReceiptBlock()) ?? (await searchDeployBlock())
+  if (found.certain) {
+    state.deployBlock = { market: deployment.market, block: String(found.block) }
+    persist()
+  } else {
+    console.warn(`deploy block: this RPC no longer serves the old blocks, so the market's history is read from block ${found.block}, which may be after its deployment. Set DEPLOY_BLOCK to the block it was deployed in.`)
+  }
+  return found.block
+}
+/** The deploy transaction's block, from forge's broadcast receipts (newest run first). */
+async function deployReceiptBlock(): Promise<{ block: bigint; certain: boolean } | undefined> {
+  const dir = `${ROOT}contracts/broadcast/Deploy.s.sol/${deployment.chainId}`
+  let files: string[] = []
+  try {
+    files = readdirSync(dir).filter((f) => /^run-\d+\.json$/.test(f)).sort().reverse()
+  } catch {
+    return undefined
+  }
+  const market = deployment.market.toLowerCase()
+  for (const f of files) {
+    let receipts: { contractAddress?: string | null; blockNumber?: string }[] = []
+    try {
+      receipts = JSON.parse(readFileSync(`${dir}/${f}`, 'utf8')).receipts ?? []
+    } catch {
+      continue
+    }
+    const r = receipts.find((x) => x.contractAddress?.toLowerCase() === market && x.blockNumber)
+    if (!r) continue
+    const block = BigInt(r.blockNumber!)
+    // The same address can come from an older local fork: the market must have code at that block.
+    const code = await chain.publicClient.getCode({ address: deployment.market, blockNumber: block }).catch(() => undefined)
+    if (code === '0x') continue
+    return { block, certain: true }
+  }
+  return undefined
+}
+/** First block where the market has code (binary search). */
+async function searchDeployBlock(): Promise<{ block: bigint; certain: boolean }> {
   let lo = 0n
   let hi = lastBlock
+  let certain = true
   while (lo < hi) {
     const mid = (lo + hi) / 2n
-    const code = await chain.publicClient.getCode({ address: deployment.market, blockNumber: mid }).catch(() => undefined)
+    const code = await chain.publicClient.getCode({ address: deployment.market, blockNumber: mid }).catch(() => {
+      certain = false
+      return undefined
+    })
     if (code && code !== '0x') hi = mid
     else lo = mid + 1n
   }
-  return lo
+  return { block: lo, certain }
 }
 const deployBlock = await findDeployBlock()
+
+// Market event history, read in windows that public RPCs accept (they cap eth_getLogs at 10k to 50k
+// blocks) and cached per query, so a refresh reads only the blocks added since. The newest
+// REORG_DEPTH blocks are read again on every call and never cached.
+const LOG_WINDOW = BigInt(process.env.LOG_WINDOW ?? 10_000)
+const REORG_DEPTH = BigInt(process.env.REORG_DEPTH ?? (DEPLOYMENT === 'local' ? 0 : 12))
+const LOG_PARALLEL = 4 // windows read at once
+const logScans = new Map<string, { to: bigint; logs: unknown[]; busy: Promise<unknown> }>()
+const windowsOf = (from: bigint, to: bigint) => {
+  const out: [bigint, bigint][] = []
+  for (let a = from; a <= to; a += LOG_WINDOW) out.push([a, a + LOG_WINDOW - 1n < to ? a + LOG_WINDOW - 1n : to])
+  return out
+}
+async function readWindows<T>(from: bigint, to: bigint, read: (fromBlock: bigint, toBlock: bigint) => Promise<T[]>, onWindow?: (to: bigint, logs: T[]) => void): Promise<T[]> {
+  const all: T[] = []
+  const ws = windowsOf(from, to)
+  for (let i = 0; i < ws.length; i += LOG_PARALLEL) {
+    const batch = ws.slice(i, i + LOG_PARALLEL)
+    const results = await Promise.all(batch.map(([a, b]) => read(a, b)))
+    results.forEach((logs, j) => {
+      all.push(...logs)
+      onWindow?.(batch[j]![1], logs)
+    })
+  }
+  return all
+}
+/** Every log of one query since the market was deployed. Calls with the same key run one after another. */
+function scanLogs<T>(key: string, read: (fromBlock: bigint, toBlock: bigint) => Promise<T[]>): Promise<T[]> {
+  let entry = logScans.get(key)
+  if (!entry) logScans.set(key, (entry = { to: deployBlock - 1n, logs: [], busy: Promise.resolve() }))
+  const e = entry
+  const run = e.busy.then(async () => {
+    const head = await chain.publicClient.getBlockNumber({ cacheTime: 0 })
+    const safe = head - REORG_DEPTH
+    // Confirmed blocks: cached window by window, so a failure keeps what was read before it.
+    if (e.to < safe)
+      await readWindows(e.to + 1n, safe, read, (to, logs) => {
+        e.logs.push(...logs)
+        e.to = to
+      })
+    const recent = e.to < head ? await readWindows(e.to + 1n, head, read) : []
+    return [...(e.logs as T[]), ...recent]
+  })
+  e.busy = run.catch(() => {})
+  return run
+}
 
 async function watch() {
   try {
@@ -639,6 +781,263 @@ const MONITOR_EVERY_MS = Number(process.env.MONITOR_EVERY_MS ?? 0)
 if (MONITOR_EVERY_MS > 0) setInterval(() => void bridge.enqueue({ ...WF.monitor }), MONITOR_EVERY_MS)
 
 // ---------------------------------------------------------------------------
+// Investor portfolio and business overview (signed-in views, read from the chain)
+// ---------------------------------------------------------------------------
+
+/** A signed-in investor: the browser sends the key it got when it signed up or signed in. */
+function signedInInvestor(req: Request, lenderId: unknown): Lender {
+  const lender = typeof lenderId === 'string' ? state.lenders.find((x) => x.id === lenderId) : undefined
+  if (!lender) fail(404, 'We could not find this investor account. Sign in again to continue.')
+  if (!sessionFor(lender, req.headers.get('x-investor-key'))) {
+    fail(401, 'This browser is no longer signed in to the investor account. Sign in again to continue.')
+  }
+  return lender
+}
+
+/** Where to send a bank transfer for a deposit: the client funds account in the deposit's currency. */
+const transferInstructions = (i: Intent) => ({
+  beneficiary: 'Tradeflow Client Funds',
+  iban: i.currency === 'EUR' ? 'DE89 3704 0044 0532 0130 00' : 'US-ACH 021000021 / 9988776655',
+  reference: i.reference,
+})
+
+const regions = new Intl.DisplayNames(['en'], { type: 'region' })
+const countryName = (code: string) => {
+  try {
+    return regions.of(code) ?? code
+  } catch {
+    return code
+  }
+}
+
+/** Where an investor's identity check stands: the provider's decision, the latest KYC run and the registry. */
+function identityOf(l: Lender, verifiedOnchain: boolean) {
+  const input = JSON.stringify({ lenderId: l.id })
+  const run = state.runs.find((r) => r.handler === WF.kyc.handler && r.input === input)
+  const decided = run?.status === 'success' && run.resultData?.verified === false
+  const status: 'verified' | 'pending' | 'rejected' = verifiedOnchain
+    ? 'verified'
+    : l.kycStatus === 'rejected' || decided
+      ? 'rejected'
+      : 'pending'
+  const reason =
+    status !== 'rejected'
+      ? run?.status === 'failed'
+        ? 'The identity check did not finish. Start it again.'
+        : undefined
+      : l.kycStatus === 'rejected'
+        ? `Our identity provider does not accept residents of ${countryName(l.country)}, so this account cannot invest.`
+        : typeof run?.resultData?.reason === 'string'
+          ? run.resultData.reason
+          : 'Your identity could not be verified, so this account cannot invest.'
+  return { identityStatus: status, kycRunId: run?.id, ...(reason ? { kycReason: reason } : {}) }
+}
+
+const GRADES = 'ABCDE'
+/** A position's status, from its loan's onchain status (1 Listed and 2 Funded both read as funded). */
+const POSITION_STATUS: Record<number, 'funded' | 'active' | 'repaid' | 'late' | 'defaulted'> = {
+  1: 'funded',
+  2: 'funded',
+  3: 'active',
+  4: 'repaid',
+  5: 'late',
+  6: 'defaulted',
+}
+
+/** What an investor holds of each loan today: the balance of every loan's ERC-3643 token. */
+async function notesByLoan(wallet: Address): Promise<Map<number, bigint>> {
+  const count = Number(await chain.publicClient.readContract({ address: deployment.market, abi: marketAbi, functionName: 'loanCount' }))
+  const held = await Promise.all(
+    Array.from({ length: count }, async (_, i) => {
+      const token = await chain.loanToken(i + 1)
+      const notes = token ? await chain.publicClient.readContract({ address: token, abi: loanTokenAbi, functionName: 'balanceOf', args: [wallet] }) : 0n
+      return [i + 1, notes] as const
+    }),
+  )
+  return new Map(held.filter(([, n]) => n > 0n))
+}
+
+/**
+ * An investor's portfolio. Positions come from the market's Funded events for the investor's wallet;
+ * what they hold is the balance of each loan's ERC-3643 token, what they received is the payout of
+ * their Claimed events (a USDC claim or a bank redemption, both burn the notes). Chain reads go out
+ * together, so the client folds them into a few batched requests. When the event history cannot be
+ * read, the portfolio still answers: positions from the notes held today (one note per USDC lent),
+ * bank payouts from the payout books, and a warning that the history is incomplete.
+ */
+async function portfolioOf(lender: Lender) {
+  const wallet = lender.wallet
+  const market = deployment.market
+  const key = (eventName: string) => `${eventName}|${wallet.toLowerCase()}`
+  const principal = new Map<number, bigint>()
+  const received = new Map<number, bigint>()
+  const add = (m: Map<number, bigint>, id: number, v: bigint) => m.set(id, (m.get(id) ?? 0n) + v)
+  let identity: Address | undefined
+  let warning: string | undefined
+  const [history, verifiedOnchain] = await Promise.all([
+    Promise.all([
+      scanLogs(key('Funded'), (fromBlock, toBlock) =>
+        chain.publicClient.getContractEvents({ address: market, abi: marketAbi, eventName: 'Funded', args: { lender: wallet }, fromBlock, toBlock }),
+      ),
+      scanLogs(key('Claimed'), (fromBlock, toBlock) =>
+        chain.publicClient.getContractEvents({ address: market, abi: marketAbi, eventName: 'Claimed', args: { lender: wallet }, fromBlock, toBlock }),
+      ),
+      scanLogs(key('IdentityRegistered'), (fromBlock, toBlock) =>
+        chain.publicClient.getContractEvents({ address: market, abi: marketAbi, eventName: 'IdentityRegistered', args: { lender: wallet }, fromBlock, toBlock }),
+      ),
+    ]).catch((e: Error) => {
+      console.error('portfolio history', e.message.split('\n')[0])
+      return undefined
+    }),
+    isVerified(wallet),
+  ])
+  if (history) {
+    const [fundedLogs, claimedLogs, identityLogs] = history
+    for (const e of fundedLogs) add(principal, Number(e.args.loanId), e.args.amount ?? 0n)
+    for (const e of claimedLogs) add(received, Number(e.args.loanId), e.args.payout ?? 0n)
+    identity = identityLogs.at(-1)?.args.identity
+  } else {
+    warning = 'We could not load your full history just now, so positions you have been paid for may be missing. Refresh in a minute.'
+    for (const [id, notes] of await notesByLoan(wallet)) principal.set(id, notes)
+    for (const p of state.payouts) if (p.kind === 'lender' && p.beneficiaryId === lender.id && principal.has(p.loanId)) add(received, p.loanId, BigInt(p.amount))
+  }
+
+  const ids = [...principal.keys()].sort((a, b) => b - a) // newest loan first
+  const reads = await Promise.all(
+    ids.map(async (id) => {
+      const [loan, token] = await Promise.all([chain.readLoan(BigInt(id)), chain.loanToken(id)])
+      const notes = token ? await chain.publicClient.readContract({ address: token, abi: loanTokenAbi, functionName: 'balanceOf', args: [wallet] }) : 0n
+      return { id, loan, token, notes }
+    }),
+  )
+
+  const docs = new Map(state.documents.map((d) => [docHashOf(d), d]))
+  const businesses = new Map(state.businesses.map((b) => [b.wallet.toLowerCase(), b]))
+  const positions = reads.map(({ id, loan, token, notes }) => {
+    const lent = principal.get(id)!
+    const repaid = loan.status === 4
+    // What the market pays per note: the lenders' share over the target (principal plus interest).
+    const owed = repaid ? loan.repaidAmount : dueOf(loan)
+    const expected = loan.target > 0n ? (lent * owed) / loan.target : lent
+    const claimable = repaid && lender.funding === 'stablecoin' && notes > 0n ? (notes * loan.repaidAmount) / loan.target : 0n
+    const doc = docs.get(loan.docHash)
+    const payout = state.payouts.find((p) => p.kind === 'lender' && p.beneficiaryId === lender.id && p.loanId === id)
+    return {
+      loanId: id,
+      ref: loan.ref,
+      title: doc?.title ?? loan.ref,
+      businessName: businesses.get(loan.borrower.toLowerCase())?.name ?? '',
+      grade: GRADES[loan.riskGrade - 1] ?? '',
+      aprBps: loan.aprBps,
+      tenorDays: loan.tenorDays,
+      status: POSITION_STATUS[loan.status] ?? 'funded',
+      loanStatus: loan.status,
+      maturity: loan.maturity, // unix seconds, 0 until the business is paid
+      dueDate: doc?.dueDate,
+      token: token ?? null,
+      symbol: `TFN${id}`,
+      notes,
+      principalUsd6: lent,
+      expectedUsd6: expected,
+      receivedUsd6: received.get(id) ?? 0n,
+      claimableUsd6: claimable,
+      ...(payout ? { payoutRef: payout.payoutRef } : {}),
+    }
+  })
+
+  const sum = (xs: typeof positions, f: (p: (typeof positions)[number]) => bigint) => xs.reduce((t, p) => t + f(p), 0n)
+  // Still working: the principal is out and the payout is to come (raising, funded, active or late).
+  const open = positions.filter((p) => [1, 2, 3, 5].includes(p.loanStatus))
+  return {
+    lender: { ...publicLender(lender), verifiedOnchain, ...(identity ? { identity } : {}), ...identityOf(lender, verifiedOnchain) },
+    ...(warning ? { warning } : {}),
+    positions,
+    deposits: state.intents
+      .filter((i) => i.lenderId === lender.id)
+      .map((i) => ({
+        reference: i.reference,
+        loanId: i.loanId,
+        amountMinor: i.amountMinor,
+        currency: i.currency,
+        status: i.status,
+        ...(i.fxRateE8 ? { fxRateE8: i.fxRateE8 } : {}),
+        ...(i.stablecoinAmount ? { stablecoinAmount: i.stablecoinAmount } : {}),
+        createdAt: i.createdAt,
+        ...(i.status === 'awaiting_funds' ? { instructions: transferInstructions(i) } : {}),
+      })),
+    totals: {
+      investedUsd6: sum(open, (p) => p.principalUsd6), // principal in active loans
+      expectedUsd6: sum(open, (p) => p.expectedUsd6 - p.principalUsd6), // interest still to come
+      receivedUsd6: sum(positions, (p) => p.receivedUsd6),
+      claimableUsd6: sum(positions, (p) => p.claimableUsd6),
+    },
+  }
+}
+
+/** Every loan the market lists for a borrower wallet, read in one batch. */
+async function loansOf(borrower: Address) {
+  const count = Number(await chain.publicClient.readContract({ address: deployment.market, abi: marketAbi, functionName: 'loanCount' }))
+  const loans = await Promise.all(Array.from({ length: count }, async (_, i) => ({ id: i + 1, ...(await chain.readLoan(BigInt(i + 1))) })))
+  return loans.filter((l) => l.borrower.toLowerCase() === borrower.toLowerCase())
+}
+/** A document's face value in USD (6 decimals), at the rate the loan was listed with. */
+const faceUsd6 = (l: { faceValueMinor: bigint; fxRateE8: bigint }) => (l.faceValueMinor * (l.fxRateE8 > 0n ? l.fxRateE8 : 100_000_000n)) / 10_000n
+
+/** The business's own documents with their loans, and its overview: totals, the next item due, frozen or not. */
+async function businessView(business: Business) {
+  const own = state.documents.filter((d) => d.businessId === business.id)
+  const [loans, frozen] = await Promise.all([
+    loansOf(business.wallet),
+    chain.publicClient.readContract({ address: deployment.market, abi: marketAbi, functionName: 'frozenBorrower', args: [business.wallet] }),
+  ])
+  const byHash = new Map<Hex, (typeof loans)[number]>()
+  for (const l of loans) byHash.set(l.docHash, l) // the newest loan wins, as in loanFor
+  const documents = own.map((doc) => {
+    const { review: _r, ...d } = doc
+    const docHash = docHashOf(doc)
+    const loan = doc.status === 'confirmed' ? byHash.get(docHash) : undefined
+    return {
+      ...d,
+      docHash,
+      buyerLink: buyerLink(doc),
+      review: reviewOf(doc),
+      ...(loan ? { loan: { id: loan.id, status: loan.status, maturity: loan.maturity, target: loan.target, funded: loan.funded } } : {}),
+    }
+  })
+
+  const OWED = [3, 5, 6] // paid out to the business, not yet repaid by the buyer: Disbursed, Late, Defaulted
+  const total = (xs: typeof loans, f: (l: (typeof loans)[number]) => bigint) => xs.reduce((t, l) => t + f(l), 0n)
+  const due = own
+    .flatMap((doc) => {
+      const loan = doc.status === 'confirmed' ? byHash.get(docHashOf(doc)) : undefined
+      return loan && OWED.includes(loan.status) ? [{ doc, loan }] : []
+    })
+    .sort((a, b) => (a.loan.maturity === b.loan.maturity ? a.doc.dueDate.localeCompare(b.doc.dueDate) : a.loan.maturity < b.loan.maturity ? -1 : 1))[0]
+  const overview = {
+    advancedUsd6: total(loans.filter((l) => l.status >= 3), (l) => l.funded), // paid out to the business
+    outstandingUsd6: total(loans.filter((l) => OWED.includes(l.status)), faceUsd6), // still owed by buyers
+    repaidUsd6: total(loans.filter((l) => l.status === 4), faceUsd6), // paid by buyers
+    inReview: documents.filter((d) => d.review?.status === 'in_review').length,
+    frozen,
+    ...(due
+      ? {
+          nextDue: {
+            docNumber: due.doc.number,
+            buyer: due.doc.buyer,
+            dueDate: due.doc.dueDate,
+            amountMinor: due.doc.amountMinor,
+            currency: due.doc.currency,
+            loanId: due.loan.id,
+            maturity: due.loan.maturity,
+            late: due.loan.status !== 3,
+          },
+        }
+      : {}),
+  }
+  return { business: ownBusiness(business), documents, overview }
+}
+
+// ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
 
@@ -653,12 +1052,9 @@ async function buildState() {
       return { id: i + 1, ...l, loanToken: loanToken ?? null } // loanToken: the loan's ERC-3643 token (its notes)
     }),
   )
-  const fundingEvents = await chain.publicClient.getContractEvents({
-    address: deployment.market,
-    abi: marketAbi,
-    eventName: 'Funded',
-    fromBlock: deployBlock,
-  }).catch(() => [])
+  const fundingEvents = await scanLogs('Funded|*', (fromBlock, toBlock) =>
+    chain.publicClient.getContractEvents({ address: deployment.market, abi: marketAbi, eventName: 'Funded', fromBlock, toBlock }),
+  ).catch(() => [])
   const credited = state.intents.filter((i) => i.status === 'credited')
   const sum = (xs: Intent[]) => xs.reduce((t, i) => t + BigInt(i.stablecoinAmount ?? '0'), 0n)
   const books = {
@@ -700,10 +1096,13 @@ const server = Bun.serve({
   idleTimeout: 255, // some calls wait for a workflow run to finish
   routes: {
     '/': index,
-    '/loans/*': index,
-    '/ops': index,
+    '/investor': index,
+    '/investor/*': index,
     '/business': index,
+    '/business/*': index,
+    '/loans/*': index, // older links; the app sends them to /investor/loans/:id
     '/buyer/*': index,
+    '/ops': index,
 
     // ---------------- registry, credit, sanctions (listing workflow) ----------------
     '/v1/registry/verify': {
@@ -928,7 +1327,7 @@ const server = Bun.serve({
         }
 
         const id = `biz-${slug(name)}-${suffix()}`
-        const business: Business = { id, name, country, registrationNumber, bankAccount, email, wallet: custodyWallet(id), sessionHashes: [], createdAt: nowIso() }
+        const business: Business = { id, name, country, registrationNumber, bankAccount, email, wallet: custodyWallet(id), sessions: [], createdAt: nowIso() }
         state.businesses.unshift(business)
         const key = issueSession(business)
         broadcast('rails', { kind: 'business', id })
@@ -949,21 +1348,20 @@ const server = Bun.serve({
         if (!business || !sameHash(sha256(business.email), sha256(email))) {
           fail(401, 'No business matches this country, registration number and work email. Check them and try again.')
         }
-        return json({ business: ownBusiness(business), key: issueSession(business) })
+        return json({ business: ownBusiness(business), key: issueSession(business, { unproven: true }) })
       },
     },
 
-    // The business's own view (signed in): its documents with their buyer links and review status.
+    // The business's own view (signed in): its documents with their buyer links, review status and
+    // loan once listed, and the overview (advanced, owed by buyers, repaid, in review, next due).
     '/api/businesses/:id': {
-      GET: (req) => {
-        const business = signedIn(req, req.params.id)
-        const documents = state.documents
-          .filter((d) => d.businessId === business.id)
-          .map((doc) => {
-            const { review: _r, ...d } = doc
-            return { ...d, docHash: docHashOf(doc), buyerLink: buyerLink(doc), review: reviewOf(doc) }
-          })
-        return json({ business: ownBusiness(business), documents })
+      GET: async (req) => json(await businessView(signedIn(req, req.params.id))),
+    },
+    // Signing out: the key this browser holds stops working.
+    '/api/businesses/:id/sign-out': {
+      POST: (req) => {
+        endSession(signedIn(req, req.params.id), req.headers.get('x-business-key'))
+        return json({ ok: true })
       },
     },
 
@@ -1239,7 +1637,7 @@ const server = Bun.serve({
         if (existing) {
           // Signing back in: verify again only if the wallet is not verified onchain yet.
           const runId = (await isVerified(existing.wallet)) ? undefined : runKyc(existing)
-          return json({ lender: publicLender(existing), runId })
+          return json({ lender: publicLender(existing), runId, key: issueSession(existing, { unproven: funding === 'fiat' }) })
         }
 
         const id = `lender-${slug(name)}-${suffix()}`
@@ -1254,13 +1652,54 @@ const server = Bun.serve({
           ...(bankAccount ? { bankAccount } : {}),
           kycStatus: decision.status,
           kycLevel: decision.level,
+          sessions: [],
           createdAt: nowIso(),
         }
         state.lenders.unshift(lender)
-        persist()
+        const key = issueSession(lender)
         broadcast('rails', { kind: 'lender', id })
-        return json({ lender: publicLender(lender), runId: runKyc(lender) }, 201)
+        return json({ lender: publicLender(lender), runId: runKyc(lender), key }, 201)
       },
+    },
+
+    // An investor signs in again. Bank-transfer investors by the email they signed up with; USDC
+    // investors by proving the wallet is theirs (a signed challenge, or the built-in wallet's key).
+    '/api/investors/sign-in': {
+      POST: async (req) => {
+        const b = await body<{ email: string; wallet: string; nonce: string; signature: string }>(req)
+        if (text(b.wallet)) {
+          const w = text(b.wallet)
+          if (!isAddress(w, { strict: false })) fail(400, 'Connect the wallet you invest with, then sign in.')
+          const wallet = getAddress(w)
+          if (req.headers.get('x-wallet-key')) builtinFor(req, wallet)
+          else if (!(await provesWallet(wallet, b.nonce, b.signature))) {
+            fail(401, 'We could not confirm this wallet is yours. Sign the message in your wallet, then try again.')
+          }
+          const lender =
+            state.lenders.find((l) => l.funding === 'stablecoin' && l.wallet.toLowerCase() === wallet.toLowerCase()) ??
+            fail(404, 'No investor account uses this wallet. Start investing to create one.')
+          return json({ lender: publicLender(lender), key: issueSession(lender) })
+        }
+        const email = text(b.email, 120).toLowerCase()
+        if (!EMAIL.test(email)) fail(400, 'Enter the email you signed up with, for example ana@example.com.')
+        // Unknown emails and the emails of USDC investors get the same answer, so it never tells who invests in USDC.
+        const lender =
+          state.lenders.find((l) => l.funding === 'fiat' && sameHash(sha256(l.email), sha256(email))) ??
+          fail(404, 'No bank-transfer investor uses that email. If you invest in USDC, sign in with your wallet. New to Tradeflow? Start investing to create an account.')
+        return json({ lender: publicLender(lender), key: issueSession(lender, { unproven: true }) })
+      },
+    },
+    // Signing out: the key this browser holds stops working.
+    '/api/investors/:id/sign-out': {
+      POST: (req) => {
+        endSession(signedInInvestor(req, req.params.id), req.headers.get('x-investor-key'))
+        return json({ ok: true })
+      },
+    },
+
+    // The investor's own portfolio (signed in): positions, deposits, totals and identity status.
+    '/api/investors/:id/portfolio': {
+      GET: async (req) => json(await portfolioOf(signedInInvestor(req, req.params.id))),
     },
     '/api/lenders/:id/kyc': {
       POST: (req) => {
@@ -1307,14 +1746,7 @@ const server = Bun.serve({
         persist()
         broadcast('rails', { kind: 'intent', intent })
         railsLog('bank', `transfer instructions issued to ${lender.name}: ${fiatText(amountMinor, currency)}, reference ${reference}`)
-        return json({
-          intent,
-          instructions: {
-            beneficiary: 'Tradeflow Client Funds',
-            iban: intent.currency === 'EUR' ? 'DE89 3704 0044 0532 0130 00' : 'US-ACH 021000021 / 9988776655',
-            reference,
-          },
-        })
+        return json({ intent, instructions: transferInstructions(intent) })
       },
     },
 

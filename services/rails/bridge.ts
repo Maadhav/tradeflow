@@ -86,14 +86,17 @@ export function makeBridge(opts: BridgeOptions, runs: WorkflowRun[], persist: ()
     if (!job) return
     busy = true
     try {
-      // A public RPC can throttle the simulator (HTTP 429). Retry such runs, but never one that
-      // already delivered a report, so a retry cannot write twice.
+      // A public RPC can throttle the simulator (HTTP 429), and the CLI's credential check can time
+      // out before the run starts. Retry such runs, but never one that already delivered a report,
+      // so a retry cannot write twice.
       for (let attempt = 1; ; attempt++) {
         await execute(job.run, job.req)
         const throttled = job.run.status === 'failed' && job.run.logs.some((l) => /429|Too Many Requests|rate limit/i.test(l))
+        const authTimeout = job.run.status === 'failed' && job.run.logs.some((l) => /Credential validation failed/i.test(l))
         const delivered = job.run.logs.some((l) => /report delivered/i.test(l))
-        if (!throttled || delivered || attempt >= RATE_LIMIT_RETRIES) break
-        console.log(`[run ${job.run.id} ${job.run.workflow}/${job.run.handler}] rate limited by the RPC, retrying (${attempt + 1} of ${RATE_LIMIT_RETRIES})`)
+        if (!(throttled || authTimeout) || delivered || attempt >= RATE_LIMIT_RETRIES) break
+        const why = throttled ? 'rate limited by the RPC' : 'the CLI could not validate its credentials in time'
+        console.log(`[run ${job.run.id} ${job.run.workflow}/${job.run.handler}] ${why}, retrying (${attempt + 1} of ${RATE_LIMIT_RETRIES})`)
         await new Promise((r) => setTimeout(r, 6_000 * attempt))
         job.run.logs = []
       }

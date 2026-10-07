@@ -6,6 +6,9 @@
 // onchain state, including the ERC-3643 side: each listed loan gets its own T-REX token (TFN<id>),
 // KYC registers the wallet in the identity registry, funding mints notes, a late loan's token is
 // paused, and claims and fiat redemptions burn the notes.
+// The signed-in views are checked too: investors sign up and sign in (by email, or by proving their
+// wallet) and read their own portfolio only; a business reads its overview totals and next item due.
+// Signing out revokes that browser's key, and sign-ins by email are limited instead of pushing out keys.
 // Usage: bun scripts/e2e.ts [baseUrl]   (default http://localhost:8787, fresh stack from dev-up.sh)
 
 import { generatePrivateKey, privateKeyToAccount } from '../services/rails/node_modules/viem/_esm/accounts/index.js'
@@ -29,6 +32,22 @@ async function call(path: string, body?: unknown, headers: Record<string, string
   return data
 }
 const biz = (key: string) => ({ 'x-business-key': key })
+const inv = (key: string) => ({ 'x-investor-key': key })
+const portfolio = (lenderId: string, key: string) => call(`/api/investors/${lenderId}/portfolio`, undefined, inv(key))
+const overview = async (businessId: string, key: string) => {
+  const own = await call(`/api/businesses/${businessId}`, undefined, biz(key))
+  expect(own.overview, 'the business view has no overview')
+  return own as { overview: any; documents: any[] }
+}
+const isKey = (k: unknown) => typeof k === 'string' && k.length >= 32
+/** What a lender is paid per note, as the market computes it: notes x (target + interest) / target. */
+const payoutOf = (notes: bigint, loan: any) => {
+  const target = BigInt(loan.target)
+  const owed = Number(loan.status) === 4 ? BigInt(loan.repaidAmount) : target + (target * BigInt(loan.aprBps) * BigInt(loan.tenorDays)) / (10_000n * 365n)
+  return (notes * owed) / target
+}
+/** A document's face value in USD (6 decimals) at the loan's listing rate. */
+const faceUsd6 = (loan: any) => (BigInt(loan.faceValueMinor) * BigInt(loan.fxRateE8)) / 10_000n
 function expect(cond: unknown, message: string): asserts cond {
   if (!cond) throw new Error(message)
 }
@@ -209,6 +228,12 @@ try {
     expect(wrongEmail.status === 401 && !wrongEmail.data.key, `sign-in with the wrong email: expected 401, got ${wrongEmail.status}`)
     const signIn = await call('/api/business-sessions', { country: 'CO', registrationNumber: '900.482.115-3', email: 'Finance@SierraVerde.co' })
     expect(signIn.business.id === business.id && signIn.key && signIn.key !== key, 'signing in did not return the same business with a new key')
+    // Signing out revokes only the key that signs out.
+    const extra = await call('/api/business-sessions', { country: 'CO', registrationNumber: '900482115-3', email: 'finance@sierraverde.co' })
+    await call(`/api/businesses/${business.id}/sign-out`, {}, biz(extra.key))
+    const revoked = await request(`/api/businesses/${business.id}`, undefined, biz(extra.key))
+    expect(revoked.status === 401, `business view with a signed-out key: expected 401, got ${revoked.status}`)
+    expect((await request(`/api/businesses/${business.id}`, undefined, biz(signIn.key))).status === 200, 'signing out one browser signed out another')
     const anon = await request(`/api/businesses/${business.id}`)
     expect(anon.status === 401, `business view without a key: expected 401, got ${anon.status}`)
     const forged = await request(`/api/businesses/${business.id}`, undefined, biz('not-the-key'))
@@ -268,6 +293,8 @@ try {
     const own = await call(`/api/businesses/${business.id}`, undefined, biz(key))
     const doc = own.documents.find((d: any) => d.number === 'INV-2026-0142')
     expect(doc?.review?.status === 'listed' && doc.buyerLink === reg.buyerLink, `business view: review ${JSON.stringify(doc?.review)}`)
+    expect(doc.loan?.id === loan.id && doc.loan.status === 1 && BigInt(doc.loan.target) === BigInt(loan.target), `business view: loan ${JSON.stringify(doc.loan)}`)
+    expect(own.overview.advancedUsd6 === '0' && own.overview.outstandingUsd6 === '0' && !own.overview.nextDue && own.overview.frozen === false, `overview before funding: ${JSON.stringify(own.overview)}`)
     const retry = await request('/api/documents/review', { businessId: business.id, number: 'INV-2026-0142' }, biz(key))
     expect(retry.status === 409, `starting the review of a listed document again: expected 409, got ${retry.status}`)
     return `loan ${loan.id}, grade A, target $${Number(loan.target) / 1e6}, token ${symbol}`
@@ -341,14 +368,16 @@ try {
   })
 
   await step('Ana Ruiz (bank transfer) verified onchain, EUR 3,000 credited', async () => {
-    const { lender, runId } = await call('/api/lenders', {
+    const { lender, runId, key } = await call('/api/lenders', {
       name: 'Ana Ruiz',
       email: 'ana.ruiz@example.es',
       country: 'ES',
       funding: 'fiat',
       bankAccount: 'ES91 2100 0418 4502 0005 1332',
     })
+    expect(isKey(key), 'investor sign-up returned no session key')
     ctx.ana = lender
+    ctx.anaKey = key
     const kyc = await waitRunId(runId)
     expect(kyc.resultData?.verified, 'KYC not verified')
     expect(kyc.resultData.country === 724, `KYC registered country ${kyc.resultData.country}, expected 724 (ES)`)
@@ -372,11 +401,42 @@ try {
     const notes = await notesOf(ctx.token, lender.wallet)
     expect(notes === BigInt(res.intent.stablecoinAmount), `Ana holds ${notes} TFN${loan.id}, credited ${res.intent.stablecoinAmount}`)
     expect(BigInt((await call(`/api/wallet/${lender.wallet}`)).notes[String(loan.id)] ?? 0) === notes, '/api/wallet notes differ from the token balance')
-    return `$${(Number(res.intent.stablecoinAmount) / 1e6).toFixed(2)}, ${(Number(notes) / 1e6).toFixed(2)} TFN${loan.id}`
+
+    // Ana signs in again by email (bank-transfer investors) and reads her portfolio.
+    const signIn = await call('/api/investors/sign-in', { email: 'Ana.Ruiz@Example.es' })
+    expect(signIn.lender.id === lender.id && isKey(signIn.key) && signIn.key !== key, 'signing in by email did not return the same investor with a new key')
+    const unknown = await request('/api/investors/sign-in', { email: 'nobody@example.es' })
+    expect(unknown.status === 404 && !unknown.data.key, `sign-in with an unknown email: expected 404, got ${unknown.status}`)
+    ctx.unknownEmailError = unknown.data.error
+    // Sign-ins by email alone never push out a key a browser holds: they are limited per hour instead.
+    const more: string[] = []
+    for (let i = 0; i < 9; i++) more.push((await call('/api/investors/sign-in', { email: 'ana.ruiz@example.es' })).key)
+    const limited = await request('/api/investors/sign-in', { email: 'ana.ruiz@example.es' })
+    expect(limited.status === 429 && !limited.data.key, `the 11th email sign-in in an hour: expected 429, got ${limited.status}`)
+    for (const k of [key, signIn.key, ...more]) expect((await request(`/api/investors/${lender.id}/portfolio`, undefined, inv(k))).status === 200, 'an email sign-in pushed out an earlier key')
+    // Signing out revokes only the key that signs out.
+    await call(`/api/investors/${lender.id}/sign-out`, {}, inv(more[0]!))
+    const revoked = await request(`/api/investors/${lender.id}/portfolio`, undefined, inv(more[0]!))
+    expect(revoked.status === 401 && (await request(`/api/investors/${lender.id}/portfolio`, undefined, inv(more[1]!))).status === 200, `signed-out key: expected 401, got ${revoked.status}`)
+    const p = await portfolio(lender.id, signIn.key)
+    const pos = p.positions.find((x: any) => x.loanId === loan.id)
+    const credited = BigInt(res.intent.stablecoinAmount)
+    expect(p.positions.length === 1 && pos, `portfolio positions: ${JSON.stringify(p.positions)}`)
+    expect(BigInt(pos.notes) === notes && BigInt(pos.principalUsd6) === credited, `position notes ${pos.notes}, principal ${pos.principalUsd6}; expected ${notes}`)
+    expect(BigInt(pos.expectedUsd6) === payoutOf(credited, loan) && pos.receivedUsd6 === '0' && pos.claimableUsd6 === '0', `position amounts: ${JSON.stringify(pos)}`)
+    expect(pos.symbol === `TFN${loan.id}` && sameAddr(pos.token, ctx.token) && pos.status === 'funded' && pos.grade === 'A', `position token/status: ${JSON.stringify(pos)}`)
+    expect(pos.ref === 'INV-2026-0142' && pos.businessName === 'Sierra Verde Coffee Exporters' && pos.title.startsWith('Invoice advance'), `position loan: ${JSON.stringify(pos)}`)
+    expect(BigInt(p.totals.investedUsd6) === credited && BigInt(p.totals.expectedUsd6) === payoutOf(credited, loan) - credited, `totals: ${JSON.stringify(p.totals)}`)
+    expect(p.totals.receivedUsd6 === '0' && p.totals.claimableUsd6 === '0', `totals: ${JSON.stringify(p.totals)}`)
+    const dep = p.deposits.find((d: any) => d.reference === intent.reference)
+    expect(p.deposits.length === 1 && dep?.status === 'credited' && dep.stablecoinAmount === res.intent.stablecoinAmount, `deposits: ${JSON.stringify(p.deposits)}`)
+    expect(p.lender.verifiedOnchain === true && p.lender.identityStatus === 'verified' && p.lender.identity && p.lender.funding === 'fiat', `identity: ${JSON.stringify(p.lender)}`)
+    expect(!JSON.stringify(p).includes('ana.ruiz@') && !JSON.stringify(p).includes('ES91 2100'), 'the portfolio carries the email or bank account')
+    return `$${(Number(res.intent.stablecoinAmount) / 1e6).toFixed(2)}, ${(Number(notes) / 1e6).toFixed(2)} TFN${loan.id}, portfolio principal $${(Number(pos.principalUsd6) / 1e6).toFixed(2)}`
   })
 
   await step('a KYC country with no ISO 3166 numeric code is refused, never registered as 0', async () => {
-    const { lender, runId } = await call('/api/lenders', {
+    const { lender, runId, key } = await call('/api/lenders', {
       name: 'Xavier Nowhere',
       email: 'xavier@nowhere.example',
       country: 'XX',
@@ -391,6 +451,8 @@ try {
     // The provider approved this lender, but no KYC report landed: funding is refused before any deposit.
     const early = await request('/api/onramp/intent', { lenderId: lender.id, loanId: ctx.loan.id, amountMinor: 10_000, currency: 'EUR' })
     expect(early.status === 409 && !early.data.intent, `funding by a wallet not in the identity registry: expected 409, got ${early.status}`)
+    const p = await portfolio(lender.id, key)
+    expect(p.lender.identityStatus === 'rejected' && /ISO 3166 numeric/.test(p.lender.kycReason ?? '') && !p.lender.verifiedOnchain, `portfolio identity: ${JSON.stringify(p.lender)}`)
     return kyc.resultData.reason
   })
 
@@ -400,6 +462,7 @@ try {
     expect(wallet.address && wallet.key, 'no built-in wallet created')
     const other = await call('/api/wallet/builtin', {})
     expect(other.address !== wallet.address, 'two browsers got the same built-in wallet')
+    ctx.otherWallet = other
     const lender = { name: 'Mallory', email: 'mallory@example.com', country: 'KP', funding: 'stablecoin' }
     const bare = await request('/api/lenders', { ...lender, wallet: wallet.address })
     expect(bare.status === 401, `sign-up with someone else's wallet and no proof: expected 401, got ${bare.status}`)
@@ -425,7 +488,25 @@ try {
       signature: await owner.signMessage({ message: c2.message }),
     })
     expect(chen.status === 201 && chen.data.lender.wallet === owner.address, `signed sign-up: ${chen.status} ${chen.data.error ?? ''}`)
+    expect(isKey(chen.data.key), 'USDC sign-up returned no session key')
     expect((await waitRunId(chen.data.runId)).resultData?.verified, 'KYC of the signed-up wallet not verified')
+
+    // USDC investors sign in again by signing a fresh challenge with their wallet.
+    const c3 = await call('/api/lenders/challenge', { wallet: owner.address })
+    const forgedIn = await request('/api/investors/sign-in', { wallet: owner.address, nonce: c3.nonce, signature: await intruder.signMessage({ message: c3.message }) })
+    expect(forgedIn.status === 401 && !forgedIn.data.key, `sign-in signed by another key: expected 401, got ${forgedIn.status}`)
+    const c4 = await call('/api/lenders/challenge', { wallet: owner.address })
+    const chenIn = await call('/api/investors/sign-in', { wallet: owner.address, nonce: c4.nonce, signature: await owner.signMessage({ message: c4.message }) })
+    expect(chenIn.lender.id === chen.data.lender.id && isKey(chenIn.key) && chenIn.key !== chen.data.key, 'signing in with the wallet did not return the same investor with a new key')
+    const c5 = await call('/api/lenders/challenge', { wallet: intruder.address })
+    const nobody = await request('/api/investors/sign-in', { wallet: intruder.address, nonce: c5.nonce, signature: await intruder.signMessage({ message: c5.message }) })
+    expect(nobody.status === 404 && !nobody.data.key, `sign-in with a wallet no investor uses: expected 404, got ${nobody.status}`)
+    // The email of a USDC investor gets the same answer as an unknown one, so sign-in never reveals who invests in USDC.
+    const byEmail = await request('/api/investors/sign-in', { email: 'chen.wei@example.sg' })
+    expect(byEmail.status === 404 && !byEmail.data.key && byEmail.data.error === ctx.unknownEmailError, `email sign-in of a USDC investor: expected the unknown-email 404, got ${byEmail.status} ${byEmail.data.error}`)
+    const p = await portfolio(chen.data.lender.id, chenIn.key)
+    expect(p.positions.length === 0 && p.totals.investedUsd6 === '0' && p.lender.verifiedOnchain === true && p.lender.funding === 'stablecoin', `new investor portfolio: ${JSON.stringify(p)}`)
+    ctx.chenKey = chenIn.key
     const state = await call('/api/state')
     expect(!state.lenders.some((l: any) => l.wallet === wallet.address), 'an unproven sign-up was stored')
   })
@@ -440,7 +521,21 @@ try {
       wallet: wallet.address,
     }, walletHeaders())
     expect(status === 201, `${status} ${data.error}`)
+    expect(isKey(data.key), 'built-in wallet sign-up returned no session key')
     ctx.ben = data.lender
+    ctx.benKey = data.key
+    // A built-in wallet signs in with its wallet key, never with another wallet's.
+    const benIn = await call('/api/investors/sign-in', { wallet: wallet.address }, walletHeaders())
+    expect(benIn.lender.id === data.lender.id && isKey(benIn.key), 'signing in with the built-in wallet did not return the investor')
+    const wrongWallet = await request('/api/investors/sign-in', { wallet: wallet.address }, { 'x-wallet-key': ctx.otherWallet.key })
+    expect(wrongWallet.status === 401 && !wrongWallet.data.key, `sign-in with another wallet's key: expected 401, got ${wrongWallet.status}`)
+    // The portfolio answers only to this investor's own key.
+    const anon = await request(`/api/investors/${data.lender.id}/portfolio`)
+    expect(anon.status === 401, `portfolio without a key: expected 401, got ${anon.status}`)
+    const otherInvestor = await request(`/api/investors/${data.lender.id}/portfolio`, undefined, inv(ctx.anaKey))
+    expect(otherInvestor.status === 401 && !otherInvestor.data.positions, `portfolio with another investor's key: expected 401, got ${otherInvestor.status}`)
+    const businessKey = await request(`/api/investors/${data.lender.id}/portfolio`, undefined, inv(ctx.sierraKey))
+    expect(businessKey.status === 401, `portfolio with a business key: expected 401, got ${businessKey.status}`)
     const kyc = await waitRunId(data.runId)
     expect(kyc.resultData?.verified && kyc.resultData.country === 840, `KYC not verified as US (840): ${JSON.stringify(kyc.resultData)}`)
     expect(await verifiedInRegistry(wallet.address), 'KYC did not verify the wallet in the ERC-3643 identity registry')
@@ -462,7 +557,24 @@ try {
     expect(notes === remaining, `Ben holds ${notes} TFN${loan.id}, funded ${remaining}`)
     const supply = await supplyOf(ctx.token)
     expect(supply === BigInt(loan.target), `TFN${loan.id} supply ${supply}, loan target ${loan.target}`)
-    return `$${Number(remaining) / 1e6} funded, TFN${loan.id} supply ${(Number(supply) / 1e6).toFixed(2)}, payout ${r.resultData?.payoutRef}`
+
+    // Ben's portfolio shows his position; Ana's still shows only her own.
+    const p = await portfolio(ctx.ben.id, ctx.benKey)
+    const pos = p.positions.find((x: any) => x.loanId === loan.id)
+    expect(p.positions.length === 1 && pos && BigInt(pos.notes) === remaining && BigInt(pos.principalUsd6) === remaining, `Ben's position: ${JSON.stringify(pos)}`)
+    expect(pos.status === 'active' && Number(pos.maturity) > 0 && BigInt(pos.expectedUsd6) === payoutOf(remaining, loan), `Ben's position status: ${JSON.stringify(pos)}`)
+    expect(BigInt(p.totals.investedUsd6) === remaining && p.totals.claimableUsd6 === '0', `Ben's totals: ${JSON.stringify(p.totals)}`)
+    const ana = await portfolio(ctx.ana.id, ctx.anaKey)
+    expect(ana.positions.length === 1 && BigInt(ana.positions[0].principalUsd6) === BigInt(loan.fiatFunded) && ana.positions[0].status === 'active', `Ana's position after Ben funded: ${JSON.stringify(ana.positions)}`)
+    expect(!JSON.stringify(ana).includes(wallet.address), "Ana's portfolio shows another investor's wallet")
+
+    // The business sees the advance paid out and what its buyer owes.
+    const disbursed = await loanByDoc(ctx.inv.docHash)
+    const { overview: o, documents } = await overview(ctx.sierra.id, ctx.sierraKey)
+    expect(BigInt(o.advancedUsd6) === BigInt(disbursed.target) && BigInt(o.outstandingUsd6) === faceUsd6(disbursed) && o.repaidUsd6 === '0', `overview after payout: ${JSON.stringify(o)}`)
+    expect(o.nextDue?.docNumber === 'INV-2026-0142' && o.nextDue.amountMinor === 925_000 && o.nextDue.currency === 'EUR' && o.nextDue.buyer === 'Kaffeehaus Berlin GmbH', `next due: ${JSON.stringify(o.nextDue)}`)
+    expect(documents.find((d: any) => d.number === 'INV-2026-0142')?.loan?.status === 3, 'the document does not show its loan paid out')
+    return `$${Number(remaining) / 1e6} funded, TFN${loan.id} supply ${(Number(supply) / 1e6).toFixed(2)}, payout ${r.resultData?.payoutRef}, owed by buyer $${(Number(o.outstandingUsd6) / 1e6).toFixed(2)}`
   })
 
   await step('buyer pays the full invoice: lenders repaid, balance to the business, Ana repaid to her bank, Ben claims', async () => {
@@ -488,14 +600,35 @@ try {
     const portal = await call(`/api/buyer/${ctx.invToken}`)
     expect(portal.loan.status === 4 && Number(portal.loan.repaidAt) > 0 && portal.payment?.amountMinor === 925_000, 'buyer portal does not show the invoice paid')
 
+    // Ana's portfolio: paid back to her bank, with the payout reference, nothing left to claim.
+    const anaPayout = (await call('/api/state')).payouts.find((p: any) => p.idempotencyKey === `redeem-${loan.id}-${ctx.ana.id}`)
+    const ana = await portfolio(ctx.ana.id, ctx.anaKey)
+    const anaPos = ana.positions.find((x: any) => x.loanId === loan.id)
+    expect(anaPayout && anaPos?.status === 'repaid' && anaPos.receivedUsd6 === anaPayout.amount && anaPos.payoutRef === anaPayout.payoutRef, `Ana's repaid position: ${JSON.stringify(anaPos)}`)
+    expect(anaPos.notes === '0' && anaPos.claimableUsd6 === '0' && ana.totals.claimableUsd6 === '0' && ana.totals.investedUsd6 === '0' && ana.totals.receivedUsd6 === anaPayout.amount, `Ana's totals: ${JSON.stringify(ana.totals)}`)
+    expect(BigInt(anaPos.expectedUsd6) === BigInt(anaPayout.amount), `Ana expected ${anaPos.expectedUsd6}, was paid ${anaPayout.amount}`)
+
     const w = await call(`/api/wallet/${wallet.address}`)
     expect(BigInt(w.notes[String(ctx.loan.id)] ?? 0) > 0n, 'Ben holds no notes to claim')
+    // Ben's portfolio: ready to claim what the market will pay for his notes.
+    const benBefore = await portfolio(ctx.ben.id, ctx.benKey)
+    const claimable = payoutOf(BigInt(w.notes[String(ctx.loan.id)]), repaid)
+    const benPos = benBefore.positions.find((x: any) => x.loanId === loan.id)
+    expect(benPos?.status === 'repaid' && BigInt(benPos.claimableUsd6) === claimable && BigInt(benBefore.totals.claimableUsd6) === claimable, `Ben's claimable: ${JSON.stringify(benPos)}`)
     expect(BigInt(w.notes[String(ctx.loan.id)]) === (await notesOf(ctx.token, wallet.address)), '/api/wallet notes differ from the token balance')
     await send(market, calldata.claim(ctx.loan.id))
     const w2 = await call(`/api/wallet/${wallet.address}`)
     expect(!w2.notes[String(ctx.loan.id)] && BigInt(w2.usdc) > BigInt(w.usdc), 'claim did not pay out')
     expect((await notesOf(ctx.token, wallet.address)) === 0n, 'claim did not burn the TFN notes')
     expect((await supplyOf(ctx.token)) === 0n, 'TFN notes still outstanding after every lender was repaid')
+    const benAfter = await portfolio(ctx.ben.id, ctx.benKey)
+    const claimed = benAfter.positions.find((x: any) => x.loanId === loan.id)
+    expect(BigInt(claimed.receivedUsd6) === BigInt(w2.usdc) - BigInt(w.usdc) && claimed.claimableUsd6 === '0' && claimed.notes === '0', `Ben's claimed position: ${JSON.stringify(claimed)}`)
+    expect(benAfter.totals.claimableUsd6 === '0' && benAfter.totals.receivedUsd6 === claimed.receivedUsd6 && benAfter.totals.investedUsd6 === '0', `Ben's totals: ${JSON.stringify(benAfter.totals)}`)
+
+    // The business sees the invoice repaid and nothing left due.
+    const { overview: o } = await overview(ctx.sierra.id, ctx.sierraKey)
+    expect(BigInt(o.repaidUsd6) === faceUsd6(repaid) && o.outstandingUsd6 === '0' && !o.nextDue && BigInt(o.advancedUsd6) === BigInt(repaid.target), `overview after repayment: ${JSON.stringify(o)}`)
     return `paid EUR ${paid.amountMinor / 100}, $${(Number(owed) / 1e6).toFixed(2)} to lenders, $${(Number(d.balance) / 1e6).toFixed(2)} balance, Ben claimed $${(Number(BigInt(w2.usdc) - BigInt(w.usdc)) / 1e6).toFixed(2)}`
   })
 
@@ -537,6 +670,8 @@ try {
       dueDate: day(1),
       description: 'spare parts order',
     }, biz(key))
+    ctx.rapid = business
+    ctx.rapidKey = key
     ctx.rapidToken = tokenOf(reg.buyerLink)
     const listed = await waitRunId((await call(`/api/buyer/${ctx.rapidToken}/confirm`, {})).runId)
     expect(listed.resultData?.listed && listed.resultData.grade === 'D', `expected grade D listed, got ${JSON.stringify(listed.resultData)}`)
@@ -579,6 +714,13 @@ try {
     expect(moved.error, `a transfer of TFN${loan.id} succeeded while the loan is late`)
     const portal = await call(`/api/buyer/${ctx.rapidToken}`)
     expect(portal.loan.status === 5 && portal.collection?.account?.startsWith('US-ACH'), 'buyer portal does not show the invoice overdue')
+    // The business sees why: it is frozen, and the late invoice is the next item due.
+    const { overview: o } = await overview(business.id, key)
+    expect(o.frozen === true && o.nextDue?.docNumber === 'INV-2026-0388' && o.nextDue.late === true, `overview of a late business: ${JSON.stringify(o)}`)
+    expect(BigInt(o.outstandingUsd6) === 4_000_000_000n && BigInt(o.advancedUsd6) === amount && o.repaidUsd6 === '0', `late business totals: ${JSON.stringify(o)}`)
+    const ben = await portfolio(ctx.ben.id, ctx.benKey)
+    const latePos = ben.positions.find((x: any) => x.loanId === loan.id)
+    expect(latePos?.status === 'late' && BigInt(latePos.notes) === amount && BigInt(ben.totals.investedUsd6) === amount, `Ben's late position: ${JSON.stringify(latePos)}`)
     return `loan ${loan.id} late, ${business.name} frozen, TFN${loan.id} paused`
   })
 
@@ -593,6 +735,16 @@ try {
     const noKey = await send(calldata.drip(), stablecoin, {})
     expect(noKey.status === 401, `send without the wallet key: expected 401, got ${noKey.status}`)
     return transfer.data.error
+  })
+
+  await step('the app serves both portals and their pages', async () => {
+    const paths = ['/', '/investor', '/investor/marketplace', `/investor/loans/${ctx.loan.id}`, '/business', '/business/new', `/business/loans/${ctx.loan.id}`, `/loans/${ctx.loan.id}`, `/buyer/${ctx.invToken}`, '/ops']
+    const pages = await Promise.all(
+      paths.map((p) => fetch(`${BASE}${p}`).then(async (r) => ({ p, status: r.status, html: /text\/html/.test(r.headers.get('content-type') ?? '') && /<script/i.test(await r.text()) }))),
+    )
+    const bad = pages.filter((x) => x.status !== 200 || !x.html)
+    expect(!bad.length, `not served as the app: ${bad.map((x) => `${x.p} ${x.status}`).join(', ')}`)
+    return `${paths.length} routes`
   })
 
   await step('no public response exposes emails, bank accounts, buyer links or keys', async () => {
@@ -617,6 +769,10 @@ try {
       ctx.invToken,
       ctx.rapidToken,
       ctx.sierraKey,
+      ctx.rapidKey,
+      ctx.anaKey,
+      ctx.benKey,
+      ctx.chenKey,
       wallet.key,
     ]
     const views: [string, unknown][] = [
@@ -635,6 +791,17 @@ try {
     // Buyer links appear only in the business's own, signed-in view.
     const own = JSON.stringify(await call(`/api/businesses/${ctx.sierra.id}`, undefined, biz(ctx.sierraKey)))
     expect(own.includes(ctx.invToken), "the business's own view lacks its buyer link")
+    const rapidOwn = JSON.stringify(await call(`/api/businesses/${ctx.rapid.id}`, undefined, biz(ctx.rapidKey)))
+    expect(!rapidOwn.includes(ctx.invToken) && !rapidOwn.includes('sierraverde') && !rapidOwn.includes('INV-2026-0142'), "a business view shows another business's documents")
+    const crossBusiness = await request(`/api/businesses/${ctx.rapid.id}`, undefined, biz(ctx.sierraKey))
+    expect(crossBusiness.status === 401, `business view with another business's key: expected 401, got ${crossBusiness.status}`)
+    // Portfolios carry no emails, bank accounts, buyer links or keys, and no other investor's wallet.
+    const [anaView, benView] = await Promise.all([portfolio(ctx.ana.id, ctx.anaKey), portfolio(ctx.ben.id, ctx.benKey)])
+    for (const [name, view, otherWallet] of [['Ana', anaView, wallet.address], ['Ben', benView, ctx.ana.wallet]] as const) {
+      const text = JSON.stringify(view)
+      for (const secret of secrets) expect(!text.includes(secret), `${name}'s portfolio leaks ${secret.slice(0, 6)}...`)
+      expect(!text.includes(otherWallet), `${name}'s portfolio shows another investor's wallet`)
+    }
     expect(s.documents.length >= 4 && s.businesses.length === 2 && s.lenders.length === 4, 'state is missing records')
     expect(s.loans.every((l: any) => l.loanToken && l.loanToken !== ZERO), '/api/state has a loan without its ERC-3643 token')
   })

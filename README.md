@@ -53,7 +53,7 @@ actually in the contract.
 
 ## The product, step by step
 
-1. **A business signs up** on Raise capital: legal name, country, company registration number, bank
+1. **A business signs up** at `/business` (Raise capital): legal name, country, company registration number, bank
    account for payouts and work email. The server generates the business's onchain address (its key
    stays in a custody file on the server, never in a response) and gives the browser a sign-in key
    (only its hash is stored). A registered business signs in again with its country, registration
@@ -68,11 +68,14 @@ actually in the contract.
    document. If a run stops before the workflow decides (a server restart, a timeout), the business
    can start the review again; when the workflow says no, the buyer page tells the buyer to pay the
    supplier directly.
-4. **Lenders sign up on a loan page.** Bank transfer: name, email, country and the bank account for
-   repayments. USDC: connect a wallet and prove it is yours (a browser wallet signs a one-time
-   message, which sends no transaction), then name, email and country. KYC runs through the `lender`
-   workflow, which registers the wallet in the ERC-3643 identity registry, so it can hold loan notes.
-5. **They fund.** Bank transfer: transfer details, then the deposit lands, the on-ramp mints USDC
+4. **Lenders start investing** at `/investor` (Invest). Bank transfer: name, email, country and the
+   bank account for repayments. USDC: connect a wallet and prove it is yours (a browser wallet signs a
+   one-time message, which sends no transaction), then name, email and country. KYC runs through the
+   `lender` workflow, which registers the wallet in the ERC-3643 identity registry, so it can hold
+   loan notes. The browser gets an investor sign-in key (only its hash is stored); an investor signs
+   in again by email (bank transfer) or by proving the wallet again (USDC).
+5. **They fund** from the marketplace (`/investor/marketplace`), on the loan's page, with the method
+   they signed up with. Bank transfer: transfer details, then the deposit lands, the on-ramp mints USDC
    into the market and the `lender` workflow checks it before crediting notes. USDC: the wallet
    signs `approve` and `fund` (and the faucet `drip` when it holds no USDC). Either way the market
    mints the loan's ERC-3643 token (`TFN<id>`) to the lender's wallet, one note per USDC unit.
@@ -86,6 +89,23 @@ actually in the contract.
 8. **`monitor`** marks overdue loans late (which pauses the loan's token, and freezes the business), and pauses new funding if the
    bank books, the on-ramp books and the market ever disagree. Operations can book an unmatched
    deposit to see it trip, correct the books and resume.
+
+### The two portals
+
+| Path | What it shows |
+|---|---|
+| `/` | The product, public figures, and the two ways in: Invest and Raise capital |
+| `/investor` | Start investing or sign in; once signed in, the **Portfolio**: summary (invested, expected returns, received, ready to claim), positions with their notes, payouts and claims, bank-transfer deposits, and identity status |
+| `/investor/marketplace`, `/investor/loans/:id` | Open loans, and each loan's page with the funding panel for the investor's own method and their position in it |
+| `/business` | Create the business account or sign in; once signed in, the **Overview**: totals (advanced, owed by buyers, repaid, in review), the next item due, every document with its status and buyer link, recent reviews |
+| `/business/new`, `/business/loans/:id` | Request financing (the document form, then the buyer link), and a read-only page for each of the business's loans with the buyer payment link |
+| `/buyer/:token`, `/ops` | The buyer's page, and the operator console (linked from the footer) |
+
+Each portal keeps its own session in the browser, so signing out of one leaves the other signed in.
+Signing out also revokes that browser's key on the server. A key stops working after 30 days unused;
+a sign-in never pushes out a key a browser is using, and sign-ins that prove only an email (or a
+registration number) are limited to ten per account per hour.
+Older `/loans/:id` links open the investor's loan page.
 
 ## Tokenization: ERC-3643
 
@@ -140,7 +160,11 @@ tail -f .run/rails.log       # every workflow run, line by line, while it runs
 bun scripts/e2e.ts           # the whole lifecycle through the API, asserting every run and onchain result
 ```
 
-`dev-up.sh` wipes the local state each time. Each workflow line in `.run/rails.log` is prefixed with
+`dev-up.sh` wipes the local state each time. The app reads the market's event history from the block
+it was deployed in, found once (from forge's broadcast receipt, else a search of the chain) and kept
+in the state file; set `DEPLOY_BLOCK` when the RPC has pruned that block. It reads events in windows
+of `LOG_WINDOW` blocks (default 10,000, under the caps of public RPCs) and only scans new blocks after
+that. Each workflow line in `.run/rails.log` is prefixed with
 its run, for example `[run 1 listing/verify-and-list] ... [USER LOG] registry: document found, buyer
 confirmed`; the same lines stream into the expanded activity rows in the app. To follow only the
 workflows' own step logs: `tail -f .run/rails.log | grep --line-buffered 'USER LOG'`.
@@ -165,12 +189,15 @@ Contracts: `cd contracts && forge test`.
 |---|---|
 | `POST /api/businesses` | Sign up a business; returns its sign-in key |
 | `POST /api/business-sessions` | Sign a business in again: country, registration number and the work email on file |
-| `GET /api/businesses/:id` | The business's own documents with their buyer links and review status (needs `x-business-key`) |
+| `GET /api/businesses/:id` | The business's own documents with their buyer links, review status and loan once listed, and its overview: advanced, owed by buyers, repaid, in review, next due (needs `x-business-key`) |
 | `POST /api/documents` | Enter a document, optional file; returns the buyer link (needs `x-business-key`) |
 | `POST /api/documents/review` | Start the review again after a run that did not finish (needs `x-business-key`) |
 | `GET /api/buyer/:token` | Buyer portal: the document, the supplier, whether it is financed and the loan once it is |
 | `POST /api/buyer/:token/confirm`, `/dispute`, `/pay` | The buyer's answers; confirm and dispute start `listing`, pay (the full document amount) starts `settlement` |
-| `POST /api/lenders/challenge`, `POST /api/lenders`, `POST /api/lenders/:id/kyc` | Lender sign-up with proof of wallet ownership, and KYC (runs `lender`) |
+| `POST /api/lenders/challenge`, `POST /api/lenders`, `POST /api/lenders/:id/kyc` | Lender sign-up with proof of wallet ownership (returns the investor's sign-in key), and KYC (runs `lender`) |
+| `POST /api/investors/sign-in` | An investor signs in again: by email (bank transfer), or by wallet with a signed challenge or the built-in wallet's key (USDC); returns a new sign-in key |
+| `POST /api/investors/:id/sign-out`, `POST /api/businesses/:id/sign-out` | Sign out: revokes the key sent (`x-investor-key` or `x-business-key`) |
+| `GET /api/investors/:id/portfolio` | The investor's own portfolio: positions read from the chain (notes, principal, expected payout, received, claimable, payout reference), deposits, totals and identity status (needs `x-investor-key`) |
 | `POST /api/onramp/intent`, `/deposit-received` | Bank-transfer funding |
 | `POST /api/wallet/builtin`, `GET /api/wallet/:address`, `POST /api/wallet/send`, `GET /api/tx/:hash` | A browser's own built-in wallet (local only; `x-wallet-key`), balances, signing, transaction status |
 | `POST /api/monitor/run`, `/api/ops/book-unmatched-deposit`, `/api/ops/correct-books`, `/api/ops/resume` | Operations |
