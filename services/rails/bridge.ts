@@ -91,9 +91,7 @@ export function makeBridge(opts: BridgeOptions, runs: WorkflowRun[], persist: ()
       // so a retry cannot write twice.
       for (let attempt = 1; ; attempt++) {
         await execute(job.run, job.req)
-        const throttled =
-          job.run.status === 'failed' &&
-          job.run.logs.some((l) => /429|Too Many Requests|rate limit|context deadline exceeded|Credential validation failed/i.test(l))
+        const throttled = job.run.status === 'failed' && job.run.logs.some((l) => /429|Too Many Requests|rate limit/i.test(l))
         const authTimeout = job.run.status === 'failed' && job.run.logs.some((l) => /Credential validation failed/i.test(l))
         const delivered = job.run.logs.some((l) => /report delivered/i.test(l))
         if (!(throttled || authTimeout) || delivered || attempt >= RATE_LIMIT_RETRIES) break
