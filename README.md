@@ -46,6 +46,9 @@ claim from `CreClaimIssuer`, which only the `lender` workflow can write to.
 | CreClaimIssuer | [`0x7439254a4F4C41A271911b72f76bd1e7246f35Fb`](https://sepolia.etherscan.io/address/0x7439254a4F4C41A271911b72f76bd1e7246f35Fb) |
 | Test stablecoin (tUSDC) | [`0x223E1BcE28382C2718b1cf0322F7002bb102b17B`](https://sepolia.etherscan.io/address/0x223E1BcE28382C2718b1cf0322F7002bb102b17B) |
 
+The CRE workflows reach Sepolia through a [NOWNodes](https://nownodes.io) RPC endpoint
+(`eth-sepolia.nownodes.io`): every data feed read, contract read and report write in the 14 runs went through it.
+
 All 14 workflow runs, with full CLI output and their transactions: [`evidence/`](evidence/).
 
 ## Run it locally

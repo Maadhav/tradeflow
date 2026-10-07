@@ -11,7 +11,10 @@ KEYS="$ROOT/.secrets/keys.json"
 key() { python3 -c "import json;print(json.load(open('$KEYS'))['$1'])"; }
 addr() { python3 -c "import json;print(json.load(open('$ROOT/services/rails/addresses.json'))['$1'])"; }
 RPC="${SEPOLIA_RPC:-https://ethereum-sepolia-rpc.publicnode.com}"
-CRE_RPC="${CRE_RPC:-$RPC}" # the CRE simulator's RPC; a separate endpoint spreads load off the app's
+# The CRE workflows reach Sepolia through NOWNodes (key in .secrets/nownodes.key, never committed).
+NOWNODES_KEY_FILE="$ROOT/.secrets/nownodes.key"
+if [ -z "${CRE_RPC:-}" ] && [ -f "$NOWNODES_KEY_FILE" ]; then CRE_RPC="https://eth-sepolia.nownodes.io/$(tr -d '[:space:]' < "$NOWNODES_KEY_FILE")"; fi
+CRE_RPC="${CRE_RPC:-$RPC}" # the CRE simulator's RPC, kept separate from the app's
 APP_RPC="${APP_RPC:-$RPC}" # the app server's own RPC (may carry a provider key; the browser is given $RPC)
 FORWARDER=0x15fC6ae953E024d975e77382eEeC56A9101f9F88 # Sepolia MockKeystoneForwarder (CRE simulation)
 
