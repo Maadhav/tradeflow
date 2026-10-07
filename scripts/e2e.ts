@@ -33,6 +33,16 @@ function expect(cond: unknown, message: string): asserts cond {
   if (!cond) throw new Error(message)
 }
 
+// The app may still be starting (it finds the market's deploy block first): wait up to a minute.
+for (let i = 0; ; i++) {
+  try {
+    await fetch(`${BASE}/api/config`)
+    break
+  } catch (e) {
+    if (i >= 60) throw e
+    await sleep(1000)
+  }
+}
 const config = await call('/api/config')
 const { market, stablecoin } = config.deployment as { market: string; stablecoin: string }
 
@@ -354,6 +364,7 @@ try {
     expect(ok.length === 1 && twice.some((x) => x.status === 409), `concurrent deposits: got ${twice.map((x) => x.status).join(', ')}`)
     const res = ok[0].data
     expect(res.run.status === 'success' && res.intent.status === 'credited', 'deposit not credited')
+    expect(res.run.logs.some((l: string) => l.includes('on-ramp instructed')), 'the workflow did not instruct the on-ramp conversion')
     const deposits = (await call('/api/state')).bankCredits.filter((c: any) => c.reference === intent.reference)
     expect(deposits.length === 1, `bank booked ${deposits.length} credits for one transfer`)
     const loan = await loanByDoc(ctx.inv.docHash)

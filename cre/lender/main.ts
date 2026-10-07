@@ -7,11 +7,13 @@
 // these reports), with the ISO 3166 numeric code of the KYC country. Every loan's ERC-3643 token
 // checks that registry, so loan notes can only be held by verified people.
 //
-// Handler 1 (HTTP): the on-ramp reports that a lender's bank transfer settled and was converted
-// to stablecoins. CRE independently:
-//   - fetches the deposit from the on-ramp and the lender's KYC file (Confidential HTTP)
-//   - checks the on-ramp's FX rate against Chainlink's EUR/USD Data Feed (max deviation)
-//   - recomputes the stablecoin amount from fiat x rate
+// Handler 1 (HTTP): the collection bank reports that a lender's transfer arrived. CRE then
+// orchestrates the on-ramp and checks every step:
+//   - fetches the bank record and the lender's KYC file (Confidential HTTP)
+//   - sets a price limit from Chainlink's EUR/USD Data Feed and instructs the on-ramp to convert
+//     the transfer and deliver the USDC to the market (Confidential HTTP POST, sent exactly once,
+//     idempotent by reference)
+//   - checks the executed rate against the feed and recomputes the stablecoin amount
 //   - confirms onchain that the stablecoins actually reached the market, unallocated
 //   - confirms the wallet is verified in the ERC-3643 identity registry
 // and only then credits the lender with loan notes (the loan's ERC-3643 token, minted by the market).
@@ -45,6 +47,7 @@ const configSchema = baseConfig.extend({
 type Config = z.infer<typeof configSchema>
 
 type Kyc = { lenderId: string; status: string; level: string; wallet: string; country: string }
+type Conversion = { status: string; fxRateE8: string; stablecoinAmount: string; mintTx: string; destination: string }
 type Deposit = {
   reference: string
   status: string
@@ -63,21 +66,26 @@ type Deposit = {
  * GET a rails endpoint over Confidential HTTP. The API key is a Vault DON secret injected into
  * the request only inside the enclave, and the request executes exactly once.
  */
-function confidentialGet<T>(runtime: Runtime<Config>, path: string): T {
+function confidentialRequest<T>(runtime: Runtime<Config>, method: 'GET' | 'POST', path: string, body?: unknown): T {
   const res = new ConfidentialHTTPClient()
     .sendRequest(runtime, {
       vaultDonSecrets: [{ key: runtime.config.apiKeySecretId, owner: runtime.config.secretOwner }],
       request: {
         url: `${runtime.config.railsUrl}${path}`,
-        method: 'GET',
-        multiHeaders: { 'x-api-key': { values: [`{{.${runtime.config.apiKeySecretId}}}`] } },
+        method,
+        ...(body === undefined ? {} : { bodyString: JSON.stringify(body) }),
+        multiHeaders: {
+          'x-api-key': { values: [`{{.${runtime.config.apiKeySecretId}}}`] },
+          'content-type': { values: ['application/json'] },
+        },
         encryptOutput: false,
       },
     })
     .result()
-  if (!ok(res)) throw new Error(`${path} HTTP ${res.statusCode}`)
+  if (!ok(res)) throw new Error(`${method} ${path} HTTP ${res.statusCode}: ${new TextDecoder().decode(res.body).slice(0, 200)}`)
   return json(res) as T
 }
+const confidentialGet = <T>(runtime: Runtime<Config>, path: string): T => confidentialRequest<T>(runtime, 'GET', path)
 
 /**
  * ISO 3166-1 numeric code of each country a lender can be resident in (the KYC file carries the
@@ -134,21 +142,41 @@ const onVerifyLender = (runtime: Runtime<Config>, payload: HTTPPayload): string 
 
 const onFiatDeposit = (runtime: Runtime<Config>, payload: HTTPPayload): string => {
   const { reference } = decodeInput<{ reference: string }>(payload.input)
-  const dep = confidentialGet<Deposit>(runtime, `/v1/onramp/deposits/${reference}`)
-  if (dep.status !== 'settled') throw new Error(`deposit ${reference} is ${dep.status}, not settled`)
-  if (dep.destination.toLowerCase() !== runtime.config.market.toLowerCase()) throw new Error('deposit minted to the wrong destination')
-  runtime.log('on-ramp: deposit settled and minted to the market')
+  const market = runtime.config.market.toLowerCase()
 
+  // 1. The collection bank must hold the lender's transfer.
+  const dep = confidentialGet<Deposit>(runtime, `/v1/onramp/deposits/${reference}`)
+  if (dep.status === 'awaiting_funds') throw new Error(`no transfer has arrived for ${reference}`)
+  const fiat = `${(dep.fiatAmountMinor / 100).toFixed(2)} ${dep.currency}`
+  runtime.log(`bank: ${fiat} received for reference ${reference}`)
+
+  // 2. Only a verified lender's money is converted.
   const kyc = confidentialGet<Kyc>(runtime, `/v1/kyc/${dep.lenderId}`)
   if (kyc.status !== 'approved') throw new Error(`lender ${dep.lenderId} is not KYC approved`)
   if (kyc.wallet.toLowerCase() !== dep.wallet.toLowerCase()) throw new Error('deposit wallet does not match KYC file')
   runtime.log('KYC file approved and matches the deposit wallet')
 
-  // FX check against Chainlink's EUR/USD Data Feed.
-  const providerRate = BigInt(dep.fxRateE8)
-  let feedRate = 100_000_000n
+  // 3. Price limit from Chainlink's EUR/USD Data Feed: the on-ramp may not convert below it.
+  const feedRate = dep.currency === 'EUR' ? readEurUsd(runtime) : 100_000_000n
+  const minRateE8 = dep.currency === 'EUR' ? (feedRate * (10_000n - BigInt(runtime.config.maxFxDeviationBps))) / 10_000n : feedRate
+
+  // 4. Instruct the on-ramp: convert this transfer and deliver the USDC to the market. Confidential
+  //    HTTP sends the instruction exactly once, and the idempotency key stops a retry converting twice.
+  const conv =
+    dep.status === 'received'
+      ? confidentialRequest<Conversion>(runtime, 'POST', '/v1/onramp/conversions', {
+          reference,
+          destination: runtime.config.market,
+          minRateE8: minRateE8.toString(),
+          idempotencyKey: `convert-${reference}`,
+        })
+      : { status: dep.status, fxRateE8: dep.fxRateE8, stablecoinAmount: dep.stablecoinAmount, mintTx: dep.mintTx, destination: dep.destination }
+  if (conv.destination.toLowerCase() !== market) throw new Error('on-ramp delivered to the wrong destination')
+  runtime.log(`on-ramp instructed: ${fiat} converted to ${(Number(conv.stablecoinAmount) / 1e6).toFixed(2)} USDC and delivered to the market, tx ${conv.mintTx}`)
+
+  // 5. Check the executed rate against the feed.
+  const providerRate = BigInt(conv.fxRateE8)
   if (dep.currency === 'EUR') {
-    feedRate = readEurUsd(runtime)
     const diff = providerRate > feedRate ? providerRate - feedRate : feedRate - providerRate
     const deviationBps = (diff * 10_000n) / feedRate
     if (deviationBps > BigInt(runtime.config.maxFxDeviationBps)) {
@@ -159,10 +187,10 @@ const onFiatDeposit = (runtime: Runtime<Config>, payload: HTTPPayload): string =
     throw new Error('USD deposit quoted with a non-unit rate')
   }
 
-  // Recompute the stablecoin amount and confirm it really reached the market.
+  // 6. Recompute the stablecoin amount and confirm it really reached the market.
   const expected = toUsd6(BigInt(dep.fiatAmountMinor), providerRate)
-  const claimed = BigInt(dep.stablecoinAmount)
-  if (claimed !== expected) throw new Error(`on-ramp minted ${claimed}, expected ${expected}`)
+  const claimed = BigInt(conv.stablecoinAmount)
+  if (claimed !== expected) throw new Error(`on-ramp delivered ${claimed}, expected ${expected}`)
   const unallocated = read<bigint>(runtime, runtime.config.market, marketAbi, 'unallocated')
   if (unallocated < claimed) throw new Error(`only ${unallocated} unallocated in the market, need ${claimed}`)
   runtime.log('stablecoin amount recomputed and found in the market')

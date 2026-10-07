@@ -631,8 +631,8 @@ async function main() {
   await click(page, button(page, "I've sent the transfer"))
   await caption(
     page,
-    'The deposit is checked before any notes are issued',
-    'The workflow reads the deposit over Confidential HTTP, checks the on-ramp rate against the EUR/USD Data Feed and confirms the USDC is in the market.',
+    'CRE instructs the on-ramp',
+    'The bank reports the transfer. The workflow checks KYC, sets a price limit from the EUR/USD Data Feed, instructs the on-ramp to convert and deliver USDC to the market over Confidential HTTP, then verifies it arrived.',
   )
   run = await waitRun(after, 'credit-fiat-deposit')
   await page.getByText('in loan notes issued').first().waitFor({ timeout: 30_000 }).catch(() => {})

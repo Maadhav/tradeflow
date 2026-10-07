@@ -1285,7 +1285,7 @@ function Transfer({ loan, live, notify, lender }: { loan: Any; live: Live; notif
   const [picked, setPicked] = useState<string | null | undefined>(undefined)
   const [instructions, setInstructions] = useState<Any>(null)
   const intents: Any[] = live.state?.intents ?? []
-  const inFlight = intents.find((i) => i.lenderId === lender.id && Number(i.loanId) === loan.id && (i.status === 'awaiting_funds' || i.status === 'settled'))
+  const inFlight = intents.find((i) => i.lenderId === lender.id && Number(i.loanId) === loan.id && (i.status === 'awaiting_funds' || i.status === 'received' || i.status === 'settled'))
   const reference = picked === undefined ? inFlight?.reference : picked
   const intent = reference ? intents.find((i) => i.reference === reference) : undefined
   const depositRun = reference ? live.runs.find((r) => r.handler === 'credit-fiat-deposit' && r.input.includes(reference)) : undefined
@@ -1382,7 +1382,7 @@ function Transfer({ loan, live, notify, lender }: { loan: Any; live: Live; notif
       ) : null}
       <ul className="progress-list" aria-live="polite">
         <li className={received ? 'done' : busy === 'deposit' ? 'now' : ''}>Transfer received</li>
-        <li className={received ? 'done' : ''}>Converted to USDC{intent.fxRateE8 ? ` at ${rate(intent.fxRateE8)}` : ''}</li>
+        <li className={intent.fxRateE8 ? 'done' : received && !failed ? 'now' : ''}>Converted to USDC{intent.fxRateE8 ? ` at ${rate(intent.fxRateE8)}` : ''}</li>
         <li className={credited ? 'done' : failed ? 'fail' : verifying ? 'now' : ''}>Deposit verified</li>
         <li className={credited ? 'done' : ''}>
           {credited ? `${usd(intent.stablecoinAmount, 2)} in loan notes issued (${noteSymbol(loan.id)})` : 'Loan notes issued'}

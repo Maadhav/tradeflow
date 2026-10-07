@@ -26967,20 +26967,25 @@ var configSchema = baseConfig.extend({
   secretOwner: string2(),
   maxFxDeviationBps: number2()
 });
-function confidentialGet(runtime, path) {
+function confidentialRequest(runtime, method, path, body) {
   const res = new ClientCapability2().sendRequest(runtime, {
     vaultDonSecrets: [{ key: runtime.config.apiKeySecretId, owner: runtime.config.secretOwner }],
     request: {
       url: `${runtime.config.railsUrl}${path}`,
-      method: "GET",
-      multiHeaders: { "x-api-key": { values: [`{{.${runtime.config.apiKeySecretId}}}`] } },
+      method,
+      ...body === undefined ? {} : { bodyString: JSON.stringify(body) },
+      multiHeaders: {
+        "x-api-key": { values: [`{{.${runtime.config.apiKeySecretId}}}`] },
+        "content-type": { values: ["application/json"] }
+      },
       encryptOutput: false
     }
   }).result();
   if (!ok(res))
-    throw new Error(`${path} HTTP ${res.statusCode}`);
+    throw new Error(`${method} ${path} HTTP ${res.statusCode}: ${new TextDecoder().decode(res.body).slice(0, 200)}`);
   return json(res);
 }
+var confidentialGet = (runtime, path) => confidentialRequest(runtime, "GET", path);
 var ISO_NUMERIC = {
   AE: 784,
   AR: 32,
@@ -27079,22 +27084,31 @@ var onVerifyLender = (runtime, payload) => {
 };
 var onFiatDeposit = (runtime, payload) => {
   const { reference } = decodeInput(payload.input);
+  const market = runtime.config.market.toLowerCase();
   const dep = confidentialGet(runtime, `/v1/onramp/deposits/${reference}`);
-  if (dep.status !== "settled")
-    throw new Error(`deposit ${reference} is ${dep.status}, not settled`);
-  if (dep.destination.toLowerCase() !== runtime.config.market.toLowerCase())
-    throw new Error("deposit minted to the wrong destination");
-  runtime.log("on-ramp: deposit settled and minted to the market");
+  if (dep.status === "awaiting_funds")
+    throw new Error(`no transfer has arrived for ${reference}`);
+  const fiat = `${(dep.fiatAmountMinor / 100).toFixed(2)} ${dep.currency}`;
+  runtime.log(`bank: ${fiat} received for reference ${reference}`);
   const kyc = confidentialGet(runtime, `/v1/kyc/${dep.lenderId}`);
   if (kyc.status !== "approved")
     throw new Error(`lender ${dep.lenderId} is not KYC approved`);
   if (kyc.wallet.toLowerCase() !== dep.wallet.toLowerCase())
     throw new Error("deposit wallet does not match KYC file");
   runtime.log("KYC file approved and matches the deposit wallet");
-  const providerRate = BigInt(dep.fxRateE8);
-  let feedRate = 100000000n;
+  const feedRate = dep.currency === "EUR" ? readEurUsd(runtime) : 100000000n;
+  const minRateE8 = dep.currency === "EUR" ? feedRate * (10000n - BigInt(runtime.config.maxFxDeviationBps)) / 10000n : feedRate;
+  const conv = dep.status === "received" ? confidentialRequest(runtime, "POST", "/v1/onramp/conversions", {
+    reference,
+    destination: runtime.config.market,
+    minRateE8: minRateE8.toString(),
+    idempotencyKey: `convert-${reference}`
+  }) : { status: dep.status, fxRateE8: dep.fxRateE8, stablecoinAmount: dep.stablecoinAmount, mintTx: dep.mintTx, destination: dep.destination };
+  if (conv.destination.toLowerCase() !== market)
+    throw new Error("on-ramp delivered to the wrong destination");
+  runtime.log(`on-ramp instructed: ${fiat} converted to ${(Number(conv.stablecoinAmount) / 1e6).toFixed(2)} USDC and delivered to the market, tx ${conv.mintTx}`);
+  const providerRate = BigInt(conv.fxRateE8);
   if (dep.currency === "EUR") {
-    feedRate = readEurUsd(runtime);
     const diff = providerRate > feedRate ? providerRate - feedRate : feedRate - providerRate;
     const deviationBps = diff * 10000n / feedRate;
     if (deviationBps > BigInt(runtime.config.maxFxDeviationBps)) {
@@ -27105,9 +27119,9 @@ var onFiatDeposit = (runtime, payload) => {
     throw new Error("USD deposit quoted with a non-unit rate");
   }
   const expected = toUsd6(BigInt(dep.fiatAmountMinor), providerRate);
-  const claimed = BigInt(dep.stablecoinAmount);
+  const claimed = BigInt(conv.stablecoinAmount);
   if (claimed !== expected)
-    throw new Error(`on-ramp minted ${claimed}, expected ${expected}`);
+    throw new Error(`on-ramp delivered ${claimed}, expected ${expected}`);
   const unallocated = read2(runtime, runtime.config.market, marketAbi, "unallocated");
   if (unallocated < claimed)
     throw new Error(`only ${unallocated} unallocated in the market, need ${claimed}`);

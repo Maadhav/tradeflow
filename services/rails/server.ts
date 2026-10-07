@@ -122,7 +122,7 @@ type Intent = {
   amountMinor: number // fiat, 2 decimals
   currency: 'EUR' | 'USD'
   createdAt: string
-  status: 'awaiting_funds' | 'settled' | 'credited' | 'failed'
+  status: 'awaiting_funds' | 'received' | 'settled' | 'credited' | 'failed' // received: at the bank; settled: converted by the on-ramp
   fxRateE8?: string
   stablecoinAmount?: string // 6 decimals
   mintTx?: string
@@ -167,7 +167,9 @@ for (const r of state.runs) {
   r.logs.push('stopped by a server restart')
 }
 let saveTimer: ReturnType<typeof setTimeout> | undefined
+let stateCache: { at: number; value: Promise<unknown> } | undefined // /api/state, see cachedState()
 function persist() {
+  stateCache = undefined
   clearTimeout(saveTimer)
   saveTimer = setTimeout(() => Bun.write(STATE_FILE, JSON.stringify(state, null, 2)), 50)
 }
@@ -246,6 +248,9 @@ const json = (data: unknown, status = 200) =>
 const authed = (req: Request) => req.headers.get('x-api-key') === API_KEY
 const unauthorized = () => json({ error: 'invalid api key' }, 401)
 const nowIso = () => new Date().toISOString()
+/** What the outside parties do, printed next to the workflow runs: `[on-ramp] ...`, `[bank] ...`. */
+const railsLog = (party: string, message: string) => console.log(`[${party}] ${message}`)
+const fiatText = (minor: number, ccy: string) => `${ccy} ${(minor / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })}`
 const ccyRateE8 = async (currency: 'EUR' | 'USD'): Promise<bigint> => {
   if (currency === 'USD') return 100_000_000n
   // The on-ramp quotes its own EUR rate (slightly off the Chainlink feed, like a real provider).
@@ -427,6 +432,7 @@ function submitListing(doc: FinDocument) {
 
 /** One request at a time per key (a transfer reference, a loan): a second one arriving meanwhile is refused. */
 const locks = new Set<string>()
+const converting = new Set<string>() // on-ramp conversions in flight, by transfer reference
 async function exclusive<T>(key: string, busy: string, fn: () => Promise<T>): Promise<T> {
   if (locks.has(key)) fail(409, busy)
   locks.add(key)
@@ -610,6 +616,7 @@ async function watch() {
     })
     lastBlock = head
     for (const log of logs) {
+      stateCache = undefined
       broadcast('chain', { tx: log.transactionHash, topic: log.topics[0], block: String(log.blockNumber) })
       if (!AUTO_RUN) continue
       const t = log.topics[0]
@@ -677,7 +684,6 @@ async function buildState() {
 
 // Every open page polls /api/state; share one chain read per STATE_TTL_MS between them.
 const STATE_TTL_MS = 2_000
-let stateCache: { at: number; value: Promise<unknown> } | undefined
 function cachedState() {
   if (!stateCache || Date.now() - stateCache.at > STATE_TTL_MS) {
     const value = buildState()
@@ -770,6 +776,40 @@ const server = Bun.serve({
         })
       },
     },
+    // The on-ramp converts a received transfer and delivers the USDC to the market, only when the
+    // lender workflow instructs it (Confidential HTTP). Idempotent by reference; refuses a rate below
+    // the workflow's limit, which the workflow derives from Chainlink's EUR/USD feed.
+    '/v1/onramp/conversions': {
+      POST: async (req) => {
+        if (!authed(req)) return unauthorized()
+        const b = (await req.json()) as { reference: string; destination: string; minRateE8: string; idempotencyKey: string }
+        const i = state.intents.find((x) => x.reference === b.reference)
+        if (!i) return json({ error: 'unknown reference' }, 404)
+        const done = () => json({ status: 'settled', fxRateE8: i.fxRateE8, stablecoinAmount: i.stablecoinAmount, mintTx: i.mintTx, destination: deployment.market, duplicate: true })
+        if ((i.status === 'settled' || i.status === 'credited') && i.mintTx) return done()
+        if (i.status !== 'received') return json({ error: `transfer is ${i.status}, not received` }, 409)
+        if (String(b.destination).toLowerCase() !== deployment.market.toLowerCase()) return json({ error: 'unsupported destination' }, 400)
+        if (converting.has(i.reference)) return json({ error: 'conversion in progress' }, 409)
+        converting.add(i.reference)
+        try {
+          const rate = await ccyRateE8(i.currency)
+          if (rate < BigInt(b.minRateE8 || '0')) {
+            railsLog('on-ramp', `${i.reference}: rate ${(Number(rate) / 1e8).toFixed(4)} is below the instructed limit, not converted`)
+            return json({ error: 'rate below the instructed limit' }, 409)
+          }
+          const usd = toUsd6(i.amountMinor, rate)
+          railsLog('on-ramp', `${i.reference}: instructed to convert ${fiatText(i.amountMinor, i.currency)} at ${(Number(rate) / 1e8).toFixed(4)} (limit ${(Number(b.minRateE8) / 1e8).toFixed(4)})`)
+          const mintTx = await chain.onRampMint(usd)
+          Object.assign(i, { status: 'settled', fxRateE8: rate.toString(), stablecoinAmount: usd.toString(), mintTx, settledAt: nowIso() })
+          persist()
+          broadcast('rails', { kind: 'conversion', intent: i })
+          railsLog('on-ramp', `${i.reference}: delivered ${(Number(usd) / 1e6).toFixed(2)} USDC to the market, tx ${mintTx}`)
+          return json({ status: 'settled', fxRateE8: i.fxRateE8, stablecoinAmount: i.stablecoinAmount, mintTx, destination: deployment.market })
+        } finally {
+          converting.delete(i.reference)
+        }
+      },
+    },
     '/v1/onramp/lenders': {
       GET: (req) => {
         if (!authed(req)) return unauthorized()
@@ -818,6 +858,7 @@ const server = Bun.serve({
           createdAt: nowIso(),
         }
         state.payouts.push(payout)
+        railsLog('payouts', `${payout.payoutRef}: ${payout.kind === 'business' ? 'business' : 'lender'} payout of ${(Number(payout.amount) / 1e6).toFixed(2)} USD instructed by CRE, loan ${payout.loanId}`)
         persist()
         broadcast('rails', { kind: 'payout', payout })
         return json({ payoutRef: payout.payoutRef, status: 'sent', duplicate: false })
@@ -1139,6 +1180,8 @@ const server = Bun.serve({
           state.bankCredits.push(credit)
           persist()
           broadcast('rails', { kind: 'repayment', reference, amountMinor, currency, mintTx })
+          railsLog('payment processor', `${payer} paid ${fiatText(amountMinor, currency)}, reference ${reference}, captured`)
+          railsLog('bank', `${fiatText(amountMinor, currency)} credited to the collection account; lenders' share on-ramped to the market, tx ${mintTx}`)
           const run = await bridge.enqueue({ ...WF.repayment, httpPayload: { loanId, reference }, loanId })
           return json({ reference, amountMinor, currency, mintTx, runId: run.id, run })
         })
@@ -1263,6 +1306,7 @@ const server = Bun.serve({
         state.intents.unshift(intent)
         persist()
         broadcast('rails', { kind: 'intent', intent })
+        railsLog('bank', `transfer instructions issued to ${lender.name}: ${fiatText(amountMinor, currency)}, reference ${reference}`)
         return json({
           intent,
           instructions: {
@@ -1284,13 +1328,12 @@ const server = Bun.serve({
         // The status check and the mint must not interleave with another request for the same transfer.
         return exclusive(`deposit-${i.reference}`, 'This transfer is being received now. This page updates when it is done.', async () => {
           if (i.status !== 'awaiting_funds') fail(409, `This transfer was already received (${i.status}).`)
-          const rate = await ccyRateE8(i.currency)
-          const usd = toUsd6(i.amountMinor, rate)
-          const mintTx = await chain.onRampMint(usd)
-          Object.assign(i, { status: 'settled', fxRateE8: rate.toString(), stablecoinAmount: usd.toString(), mintTx, settledAt: nowIso() })
+          // The collection bank records the arrival. Converting it is the lender workflow's call.
+          Object.assign(i, { status: 'received', settledAt: nowIso() })
           state.bankCredits.push({ reference: i.reference, amountMinor: i.amountMinor, currency: i.currency, payer: lender.name, valueDate: nowIso(), kind: 'deposit' })
           persist()
           broadcast('rails', { kind: 'deposit', intent: i })
+          railsLog('bank', `${fiatText(i.amountMinor, i.currency)} received from ${lender.name}, reference ${i.reference}; notifying CRE`)
           const run = await bridge.enqueue({ ...WF.fiatFunding, httpPayload: { reference: i.reference }, loanId: i.loanId })
           if (run.status === 'success') i.status = 'credited'
           persist()
