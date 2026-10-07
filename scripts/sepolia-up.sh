@@ -50,7 +50,6 @@ signer = json.load(open(f"{root}/services/rails/addresses.json"))["creSigner"]
 for w in ["listing", "lender", "settlement", "monitor"]:
     c = json.load(open(f"{root}/cre/{w}/config.local.json"))
     c.update(market=dep["market"], stablecoin=dep["stablecoin"], railsUrl="http://localhost:8788")
-    c.pop("notes", None)
     c.pop("notes", None)  # loan notes are per-loan ERC-3643 tokens, found through market.loanToken(id)
     if "secretOwner" in c:
         c["secretOwner"] = signer
