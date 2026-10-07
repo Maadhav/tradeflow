@@ -635,6 +635,60 @@ if (MONITOR_EVERY_MS > 0) setInterval(() => void bridge.enqueue({ ...WF.monitor 
 // Server
 // ---------------------------------------------------------------------------
 
+// The /api/state body: market reads (batched into Multicall3) plus the rails books.
+async function buildState() {
+  const snap = await chain.marketSnapshot()
+  const count = Number(snap.loanCount)
+  const loans = await Promise.all(
+    Array.from({ length: count }, async (_, i) => {
+      const id = BigInt(i + 1)
+      const [l, loanToken] = await Promise.all([chain.readLoan(id), chain.loanToken(i + 1).catch(() => undefined)])
+      return { id: i + 1, ...l, loanToken: loanToken ?? null } // loanToken: the loan's ERC-3643 token (its notes)
+    }),
+  )
+  const fundingEvents = await chain.publicClient.getContractEvents({
+    address: deployment.market,
+    abi: marketAbi,
+    eventName: 'Funded',
+    fromBlock: deployBlock,
+  }).catch(() => [])
+  const credited = state.intents.filter((i) => i.status === 'credited')
+  const sum = (xs: Intent[]) => xs.reduce((t, i) => t + BigInt(i.stablecoinAmount ?? '0'), 0n)
+  const books = {
+    bankUsd6: (sum(credited) + state.ledgerAdjustments.reduce((t, a) => t + BigInt(a.usd6), 0n)).toString(),
+    onrampUsd6: sum(credited.filter((i) => i.mintTx)).toString(),
+  }
+  return {
+    snapshot: snap,
+    books,
+    loans,
+    fundings: fundingEvents.map((e) => ({ ...e.args, tx: e.transactionHash })),
+    businesses: state.businesses.map(publicBusiness),
+    documents: state.documents.map(publicDocument),
+    lenders: state.lenders.map(publicLender),
+    intents: state.intents,
+    payouts: state.payouts,
+    bankCredits: state.bankCredits,
+    listings: state.listings,
+    ledgerAdjustments: state.ledgerAdjustments,
+    queue: bridge.queueLength(),
+  }
+}
+
+// Every open page polls /api/state; share one chain read per STATE_TTL_MS between them.
+const STATE_TTL_MS = 2_000
+let stateCache: { at: number; value: Promise<unknown> } | undefined
+function cachedState() {
+  if (!stateCache || Date.now() - stateCache.at > STATE_TTL_MS) {
+    const value = buildState()
+    stateCache = { at: Date.now(), value }
+    value.catch(() => {
+      if (stateCache?.value === value) stateCache = undefined
+    })
+  }
+  return stateCache.value
+}
+
 const server = Bun.serve({
   port: PORT,
   idleTimeout: 255, // some calls wait for a workflow run to finish
@@ -807,46 +861,7 @@ const server = Bun.serve({
           claimIssuer: deployment.claimIssuer ?? (await chain.claimIssuer().catch(() => null)),
         }),
     },
-    '/api/state': {
-      GET: async () => {
-        const snap = await chain.marketSnapshot()
-        const count = Number(snap.loanCount)
-        const loans = await Promise.all(
-          Array.from({ length: count }, async (_, i) => {
-            const id = BigInt(i + 1)
-            const [l, loanToken] = await Promise.all([chain.readLoan(id), chain.loanToken(i + 1).catch(() => undefined)])
-            return { id: i + 1, ...l, loanToken: loanToken ?? null } // loanToken: the loan's ERC-3643 token (its notes)
-          }),
-        )
-        const fundingEvents = await chain.publicClient.getContractEvents({
-          address: deployment.market,
-          abi: marketAbi,
-          eventName: 'Funded',
-          fromBlock: deployBlock,
-        }).catch(() => [])
-        const credited = state.intents.filter((i) => i.status === 'credited')
-        const sum = (xs: Intent[]) => xs.reduce((t, i) => t + BigInt(i.stablecoinAmount ?? '0'), 0n)
-        const books = {
-          bankUsd6: (sum(credited) + state.ledgerAdjustments.reduce((t, a) => t + BigInt(a.usd6), 0n)).toString(),
-          onrampUsd6: sum(credited.filter((i) => i.mintTx)).toString(),
-        }
-        return json({
-          snapshot: snap,
-          books,
-          loans,
-          fundings: fundingEvents.map((e) => ({ ...e.args, tx: e.transactionHash })),
-          businesses: state.businesses.map(publicBusiness),
-          documents: state.documents.map(publicDocument),
-          lenders: state.lenders.map(publicLender),
-          intents: state.intents,
-          payouts: state.payouts,
-          bankCredits: state.bankCredits,
-          listings: state.listings,
-          ledgerAdjustments: state.ledgerAdjustments,
-          queue: bridge.queueLength(),
-        })
-      },
-    },
+    '/api/state': { GET: async () => json(await cachedState()) },
     '/api/runs': { GET: () => json(state.runs.slice(0, 60)) },
     '/api/runs/:id': {
       GET: (req) => json(state.runs.find((r) => r.id === Number(req.params.id)) ?? fail(404, 'No run with that id.')),

@@ -112,12 +112,14 @@ const ZERO = '0x0000000000000000000000000000000000000000'
 
 export function makeChain(rpcUrl: string, deployment: Deployment, operatorKey: `0x${string}`) {
   const chain = { ...sepolia, rpcUrls: { default: { http: [rpcUrl] } } }
-  const publicClient = createPublicClient({ chain, transport: http(rpcUrl) })
+  // Public RPCs rate-limit hard. Batch concurrent JSON-RPC calls into one request, fold contract
+  // reads into Multicall3, and back off and retry when a provider pushes back.
+  const transport = http(rpcUrl, { batch: { batchSize: 100, wait: 25 }, retryCount: 6, retryDelay: 600 })
+  const publicClient = createPublicClient({ chain, transport, batch: { multicall: { wait: 25 } } })
   const operator = privateKeyToAccount(operatorKey)
-  const operatorWallet = createWalletClient({ chain, transport: http(rpcUrl), account: operator })
+  const operatorWallet = createWalletClient({ chain, transport, account: operator })
 
-  const walletFor = (key: `0x${string}`) =>
-    createWalletClient({ chain, transport: http(rpcUrl), account: privateKeyToAccount(key) })
+  const walletFor = (key: `0x${string}`) => createWalletClient({ chain, transport, account: privateKeyToAccount(key) })
 
   async function send(wallet: ReturnType<typeof walletFor>, address: Address, abi: any, functionName: string, args: any[]) {
     const hash = await wallet.writeContract({ address, abi, functionName, args, chain, account: wallet.account! })
