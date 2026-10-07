@@ -55,6 +55,20 @@
   .caption { font-size: 14.5px; color: var(--muted); margin-top: 12px; line-height: 1.4; }
   code { font-family: ui-monospace, Menlo, monospace; font-size: 0.92em; background: rgba(20, 32, 43, 0.06); padding: 1px 6px; border-radius: 5px; }
   .dark code { background: rgba(255, 255, 255, 0.1); }
+  .runs { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+  .runs th { text-align: left; font-size: 12.5px; font-weight: 600; color: var(--muted); padding: 0 10px 8px 0; border-bottom: 1px solid var(--line); }
+  .runs td { padding: 9px 10px 9px 0; border-bottom: 1px solid var(--line); vertical-align: top; line-height: 1.32; color: var(--ink2); }
+  .runs td.w { font-weight: 700; color: var(--ink); font-size: 14px; }
+  .runs td.h small { display: block; font-family: Tf, Arial, sans-serif; font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+  .runs td.h { font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--ink); white-space: nowrap; }
+  .runs td.t { white-space: nowrap; }
+  .runs td.tx { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; color: var(--good); white-space: nowrap; padding-right: 0; }
+  .term { background: var(--ink); color: #c9d3dc; border-radius: 10px; padding: 16px 18px; font-family: ui-monospace, Menlo, monospace; font-size: 11.4px; line-height: 1.6; white-space: nowrap; box-shadow: 0 18px 50px rgba(20, 32, 43, 0.18); }
+  .term .cmd { color: var(--crane); }
+  .term .ok { color: #9fc1e8; }
+  .term .log { color: #8fd3a8; }
+  .term .tee { border: 1px solid #f2b705; border-radius: 6px; padding: 8px 10px; margin: 8px 0; color: var(--crane); }
+  .term .tee span { color: #c9d3dc; }
 </style>
 </head>
 <body>
@@ -162,7 +176,43 @@
   </div>
 </section>
 
-<!-- 9. Vision -->
+<!-- 9. CRE flow proof -->
+<section class="slide" style="padding-top:52px">
+  <h2 style="margin-bottom:10px">The CRE flow, proven on Sepolia.</h2>
+  <p style="font-size:18px;color:var(--ink2)">Every off-chain decision is one of 4 CRE workflows. Each run ends in a signed report on Ethereum Sepolia.</p>
+  <div class="row" style="gap:26px;margin-top:20px;align-items:flex-start">
+    <table class="runs" style="flex:1">
+      <tr><th>Workflow</th><th>Handler and trigger</th><th>What it decides</th><th>Sepolia tx</th></tr>
+      <tr><td class="w">listing</td><td class="h">verify-and-list<small>HTTP, in a TEE</small></td><td>Private credit review, buyer and sanctions checks, EUR/USD feed; lists the loan and deploys its <span style="white-space:nowrap">ERC-3643</span> token</td><td class="tx">0x4a1e…ae10</td></tr>
+      <tr><td class="w" rowspan="2">lender</td><td class="h">verify-lender<small>HTTP</small></td><td>KYC over Confidential HTTP; registers the investor's identity onchain</td><td class="tx">0xdc71…462b</td></tr>
+      <tr><td class="h">credit-fiat-deposit<small>HTTP</small></td><td>Instructs the on-ramp, checks its rate against the feed, mints loan notes</td><td class="tx">0x08b7…55a2</td></tr>
+      <tr><td class="w" rowspan="3">settlement</td><td class="h">disburse-on-funded<small>EVM log</small></td><td>Pays the business once the loan is fully funded</td><td class="tx">0x8839…ce44</td></tr>
+      <tr><td class="h">confirm-repayment<small>HTTP</small></td><td>Bank and payment processor must agree, with node consensus</td><td class="tx">0x89f3…d77f</td></tr>
+      <tr><td class="h">redeem-fiat-lenders<small>EVM log</small></td><td>Pays bank investors and burns their notes</td><td class="tx">0xb00c…d992</td></tr>
+      <tr><td class="w">monitor</td><td class="h">watch-and-reconcile<small>Cron</small></td><td>Reconciles the books, pauses funding on a mismatch, locks late loans</td><td class="tx">0x8564…ced8</td></tr>
+    </table>
+    <div style="width:452px;flex:none">
+      <div class="term">
+        <div class="cmd" style="font-size:10.8px">$ cre workflow simulate listing --target sepolia … --broadcast</div>
+        <div class="ok">✓ Workflow compiled</div>
+        <div>[SIMULATION] Running trigger trigger=http-trigger@1.0.0-alpha</div>
+        <div class="tee">Trigger requested TEE Execution:<br><span>&nbsp;&nbsp;AWS Nitro in us-west-2</span><br><span>During real execution, user logs for this trigger</span><br><span>will not be visible, and will not leave the TEE.</span></div>
+        <div class="log">[USER LOG] credit file received</div>
+        <div class="log">[USER LOG] registry: document found, buyer confirmed</div>
+        <div class="log">[USER LOG] sanctions screening: no match</div>
+        <div class="log">[USER LOG] scorecard: grade A, approved</div>
+        <div class="log">[USER LOG] EUR/USD 1.1270 from the data feed</div>
+        <div class="log">[USER LOG] report delivered: tx=0x4a1e…ae10</div>
+        <div class="log">[USER LOG] loan 1 listed with its own ERC-3643 token TFN1</div>
+        <div class="ok">✓ Workflow Simulation Result</div>
+      </div>
+      <p class="caption">Run 1, excerpt. The credit file never leaves the enclave: only the grade, APR, advance and a document hash do.</p>
+    </div>
+  </div>
+  <div class="foot"><span>14 runs with full CLI output and transactions: github.com/Maadhav/tradeflow/tree/main/evidence</span><span>Market 0xBbF0…F8cF</span></div>
+</section>
+
+<!-- 10. Vision -->
 <section class="slide dark">
   <h2 style="color:#fff">An open network for trade credit.</h2>
   <ul class="list" style="max-width:940px">
