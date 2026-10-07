@@ -14,12 +14,31 @@ FORWARDER=0x15fC6ae953E024d975e77382eEeC56A9101f9F88
 
 pkill -f "anvil --fork-url" 2>/dev/null || true
 kill $(lsof -ti tcp:8787 -sTCP:LISTEN) 2>/dev/null || true # the local app (the listener only, never its clients)
+# Wait until the old anvil and app have let go of their ports, so the probes below never reach a
+# process that is shutting down.
+for i in $(seq 1 30); do
+  lsof -ti tcp:8545 -sTCP:LISTEN >/dev/null 2>&1 || lsof -ti tcp:8787 -sTCP:LISTEN >/dev/null 2>&1 || break
+  sleep 0.5
+done
 sleep 1
-# The fork runs a pinned hardfork, so forge's gas estimates match what the local chain charges even
-# when Sepolia schedules a newer one.
-nohup anvil --fork-url "${SEPOLIA_RPC:-https://ethereum-sepolia-rpc.publicnode.com}" --chain-id 11155111 --port 8545 --block-time 2 \
-  --hardfork "${ANVIL_HARDFORK:-osaka}" >"$RUN/anvil.log" 2>&1 &
-for i in $(seq 1 30); do cast chain-id --rpc-url $RPC >/dev/null 2>&1 && break; sleep 1; done
+# A load-balanced public RPC sometimes cannot serve the block it just announced, and anvil then exits
+# while creating the fork ("block not found"). Start it again a few times before giving up.
+for attempt in 1 2 3; do
+  # The fork runs a pinned hardfork, so forge's gas estimates match what the local chain charges even
+  # when Sepolia schedules a newer one.
+  nohup anvil --fork-url "${SEPOLIA_RPC:-https://ethereum-sepolia-rpc.publicnode.com}" --chain-id 11155111 --port 8545 --block-time 2 \
+    --hardfork "${ANVIL_HARDFORK:-osaka}" >"$RUN/anvil.log" 2>&1 &
+  ANVIL_PID=$!
+  for i in $(seq 1 30); do
+    cast chain-id --rpc-url $RPC >/dev/null 2>&1 && break
+    kill -0 $ANVIL_PID 2>/dev/null || break # anvil exited: no point waiting
+    sleep 1
+  done
+  cast chain-id --rpc-url $RPC >/dev/null 2>&1 && break
+  echo "anvil did not start (attempt $attempt): $(tail -1 "$RUN/anvil.log")" >&2
+  kill $ANVIL_PID 2>/dev/null || true
+  sleep 3
+done
 
 for r in platform creSigner; do
   cast rpc anvil_setBalance "$(addr $r)" 0x56BC75E2D63100000 --rpc-url $RPC >/dev/null # 100 ETH
