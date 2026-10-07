@@ -11,6 +11,7 @@ KEYS="$ROOT/.secrets/keys.json"
 key() { python3 -c "import json;print(json.load(open('$KEYS'))['$1'])"; }
 addr() { python3 -c "import json;print(json.load(open('$ROOT/services/rails/addresses.json'))['$1'])"; }
 RPC="${SEPOLIA_RPC:-https://ethereum-sepolia-rpc.publicnode.com}"
+CRE_RPC="${CRE_RPC:-$RPC}" # the CRE simulator's RPC; a separate endpoint spreads load off the app's
 FORWARDER=0x15fC6ae953E024d975e77382eEeC56A9101f9F88 # Sepolia MockKeystoneForwarder (CRE simulation)
 
 echo "platform balance: $(cast balance "$(addr platform)" --rpc-url "$RPC" --ether) ETH"
@@ -57,6 +58,15 @@ for w in ["listing", "lender", "settlement", "monitor"]:
         c["logConfidence"] = "LATEST"
     json.dump(c, open(f"{root}/cre/{w}/config.sepolia.json", "w"), indent=2)
 EOF
+
+# point the CRE sepolia target at CRE_RPC
+python3 - "$ROOT/cre/project.yaml" "$CRE_RPC" <<'PY'
+import re, sys
+path, url = sys.argv[1], sys.argv[2]
+text = open(path).read()
+text = re.sub(r"(sepolia:\n  rpcs:\n    - chain-name: ethereum-testnet-sepolia\n      url: ).*", lambda m: m.group(1) + url, text)
+open(path, "w").write(text)
+PY
 
 kill $(lsof -ti :8788) 2>/dev/null || true # the Sepolia app
 sleep 1

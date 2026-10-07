@@ -44,6 +44,7 @@ type BridgeOptions = {
 const MAX_LOG_LINES = 200
 const UPDATE_EVERY_MS = 250 // live updates: at most ~4 per second while a run streams
 const RUN_TIMEOUT_MS = 5 * 60_000
+const RATE_LIMIT_RETRIES = 4
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
 
 export function makeBridge(opts: BridgeOptions, runs: WorkflowRun[], persist: () => void) {
@@ -85,7 +86,17 @@ export function makeBridge(opts: BridgeOptions, runs: WorkflowRun[], persist: ()
     if (!job) return
     busy = true
     try {
-      await execute(job.run, job.req)
+      // A public RPC can throttle the simulator (HTTP 429). Retry such runs, but never one that
+      // already delivered a report, so a retry cannot write twice.
+      for (let attempt = 1; ; attempt++) {
+        await execute(job.run, job.req)
+        const throttled = job.run.status === 'failed' && job.run.logs.some((l) => /429|Too Many Requests|rate limit/i.test(l))
+        const delivered = job.run.logs.some((l) => /report delivered/i.test(l))
+        if (!throttled || delivered || attempt >= RATE_LIMIT_RETRIES) break
+        console.log(`[run ${job.run.id} ${job.run.workflow}/${job.run.handler}] rate limited by the RPC, retrying (${attempt + 1} of ${RATE_LIMIT_RETRIES})`)
+        await new Promise((r) => setTimeout(r, 6_000 * attempt))
+        job.run.logs = []
+      }
     } catch (e) {
       job.run.status = 'failed'
       job.run.logs.push(`could not run the workflow: ${(e as Error).message}`)
