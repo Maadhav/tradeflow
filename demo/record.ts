@@ -1,7 +1,9 @@
-// Records a captioned walkthrough of Tradeflow in one continuous take: two businesses sign up and
-// enter their own invoices, buyers confirm or dispute them through their links, two lenders sign up
-// and fund (bank transfer and a wallet), the buyer pays, operations trips and clears the reserve
-// circuit breaker, and an unpaid loan goes late.
+// Records a captioned walkthrough of Tradeflow in one continuous take, told through its two portals.
+// At /business two businesses create their accounts, see their overview and request financing for
+// their own invoices; buyers confirm or dispute them through their links. At /investor two investors
+// start investing (bank transfer and a wallet), pass KYC, fund from the marketplace and follow their
+// positions in their portfolios. The buyer pays, the investors are repaid, operations trips and
+// clears the reserve circuit breaker, and an unpaid loan goes late.
 // Usage: bun run record.ts   (stack must be running and fresh: bash scripts/dev-up.sh)
 // Env: BASE (app, default http://localhost:8787), EXPLORER (block explorer for transaction
 // cutaways, e.g. https://eth-sepolia.blockscout.com; leave unset locally), OUT_NAME (video name).
@@ -183,10 +185,35 @@ async function toTop(page: Page) {
   await sleep(600)
 }
 
+/** A link in the header nav: Invest and Raise capital on the landing, the portal's own pages inside one. */
 async function nav(page: Page, label: string) {
   await click(page, page.locator('nav.nav').getByRole('link', { name: label, exact: true }))
   await sleep(900)
 }
+
+/** Back to the landing page through the wordmark, then into a portal through its nav link. */
+async function enter(page: Page, label: 'Invest' | 'Raise capital') {
+  await click(page, page.locator('header.top a.wordmark'))
+  await sleep(900)
+  await nav(page, label)
+}
+
+/** The operator console is linked from the footer only. */
+async function operations(page: Page) {
+  await click(page, page.locator('footer.foot').getByRole('link', { name: 'Operator console', exact: true }))
+  await heading(page, 'Operations').waitFor({ timeout: 30_000 })
+  await sleep(900)
+}
+
+/** Sign out of the portal on screen, through the name menu in the header (ends only this portal's session). */
+async function signOut(page: Page) {
+  await click(page, page.locator('header.top .chip.person'))
+  await sleep(500)
+  await click(page, page.getByRole('menuitem', { name: 'Sign out', exact: true }))
+  await sleep(1200)
+}
+
+const heading = (page: Page, name: string | RegExp) => page.getByRole('heading', { level: 1, name, exact: typeof name === 'string' })
 
 /** Full navigation inside the app (a link opened from an email, a page reload). */
 async function open(page: Page, url: string) {
@@ -433,6 +460,7 @@ type Doc = {
   file?: string
 }
 
+/** Creates the business account at /business; the overview opens once it is signed in. */
 async function signUpBusiness(page: Page, b: Biz) {
   await type(page, page.locator('#biz-name'), b.name)
   await choose(page, page.locator('#biz-country'), b.country)
@@ -440,13 +468,15 @@ async function signUpBusiness(page: Page, b: Biz) {
   await type(page, page.locator('#biz-bankAccount'), b.bank)
   await type(page, page.locator('#biz-email'), b.email)
   await click(page, button(page, 'Create business account'))
-  await page.getByRole('heading', { name: 'Request financing', exact: true }).waitFor({ timeout: 30_000 })
+  await heading(page, b.name).waitFor({ timeout: 30_000 })
+  await page.locator('dl.tiles').waitFor({ timeout: 30_000 })
   await sleep(1200)
 }
 
-/** Fills the request form and returns the buyer link the app creates. */
+/** From the business overview: Request financing, fill the form, and return the buyer link the app creates. */
 async function requestFinancing(page: Page, d: Doc, beforeSubmit?: () => Promise<void>) {
-  await reveal(page.getByRole('heading', { name: 'Request financing', exact: true }), 'start')
+  await nav(page, 'Request financing')
+  await reveal(heading(page, 'Request financing'), 'start')
   await type(page, page.locator('#doc-number'), d.number)
   if (d.currency !== 'EUR') await choose(page, page.getByLabel('Currency'), d.currency)
   await type(page, page.locator('#doc-amount'), d.amount)
@@ -470,7 +500,7 @@ async function requestFinancing(page: Page, d: Doc, beforeSubmit?: () => Promise
   return link.inputValue()
 }
 
-/** After a buyer responds: back on the business page, watch the review run stream live. */
+/** After a buyer responds: back on the business overview, watch the review run stream live. */
 async function watchReview(page: Page, after: number) {
   await open(page, `${BASE}/business`)
   const row = await openNewestRun(page, 'Recent reviews')
@@ -478,6 +508,63 @@ async function watchReview(page: Page, after: number) {
   await sleep(1800)
   return { run, row }
 }
+
+/** A document's row in the business overview. */
+const docRow = (page: Page, number: string) => panel(page, 'Documents').locator('tbody tr', { hasText: number }).first()
+
+// ---------------------------------------------------------------------------
+// Flows shared by both investors
+// ---------------------------------------------------------------------------
+
+/**
+ * After sign-up the portfolio opens with the identity check streaming in its status card. Waits until
+ * the portfolio says Verified (the KYC run wrote the identity claim), and notes a run that failed.
+ */
+async function watchKyc(page: Page, after: number) {
+  await heading(page, 'Portfolio').waitFor({ timeout: 30_000 })
+  const card = page.locator('section.status-card')
+  if (await card.waitFor({ timeout: 8_000 }).then(() => true, () => false)) {
+    await reveal(card, 'start')
+    const log = card.locator('.runlog')
+    if (await log.isVisible().catch(() => false)) await point(page, log)
+  }
+  await panel(page, 'Identity').locator('.verified').waitFor({ timeout: 360_000 })
+  const failed = ((await api('/api/runs')) as any[]).find((r) => r.id > after && r.handler === 'verify-lender' && r.status === 'failed')
+  if (failed) problems.push(`run ${failed.id} verify-lender failed`)
+  await sleep(1200)
+}
+
+/** On the signed-out investor start page: Already investing? Sign in. */
+async function toSignIn(page: Page) {
+  await click(page, page.locator('.hint.switch').getByRole('button', { name: 'Sign in', exact: true }))
+  await sleep(600)
+}
+
+/** A bank-transfer investor signs in again with her email. */
+async function signInByEmail(page: Page, email: string) {
+  await toSignIn(page)
+  await click(page, page.getByRole('tab', { name: 'Bank transfer' }))
+  await type(page, page.locator('#investor-signin-email'), email)
+  await click(page, button(page, 'Sign in'))
+  await heading(page, 'Portfolio').waitFor({ timeout: 30_000 })
+  await page.locator('dl.tiles').waitFor({ timeout: 30_000 })
+  await sleep(1500)
+}
+
+/** A USDC investor signs in again by proving the wallet is his. */
+async function signInWithWallet(page: Page) {
+  await toSignIn(page)
+  await click(page, page.getByRole('tab', { name: 'USDC' }))
+  const connect = button(page, /^(Connect wallet|Create a wallet)$/)
+  if (await connect.isVisible().catch(() => false)) await click(page, connect)
+  await click(page, button(page, /^Sign in with /))
+  await heading(page, 'Portfolio').waitFor({ timeout: 60_000 })
+  await page.locator('dl.tiles').waitFor({ timeout: 30_000 })
+  await sleep(1500)
+}
+
+/** One investor's position row in the portfolio. */
+const positionRow = (page: Page, ref: string) => panel(page, 'Positions').locator('tbody tr', { hasText: ref }).first()
 
 // ---------------------------------------------------------------------------
 // The walkthrough
@@ -500,19 +587,22 @@ async function main() {
   let after = 0
   let run: any
 
-  // 1. Intro
+  // 1. Intro: the landing page and its two ways in
   await open(page, BASE)
   await say(
     page,
-    'Tradeflow: invoice financing that settles onchain',
-    `Businesses sell unpaid invoices to lenders. Every decision that depends on off-chain facts runs as a Chainlink CRE workflow and lands onchain as a signed report. Recorded on ${net}.`,
+    'Tradeflow: trade finance that settles onchain',
+    `Businesses sell confirmed invoices to investors. Every decision that depends on off-chain facts runs as a Chainlink CRE workflow and lands onchain as a signed report. Recorded on ${net}.`,
     1500,
   )
-  await audit(page, 'marketplace (empty)')
+  await point(page, page.locator('.entries'))
+  await say(page, 'Two portals', 'Investors go to /investor, businesses to /business. Each portal keeps its own sign-in.')
+  await audit(page, 'landing (empty)')
 
-  // 2. Sierra Verde signs up and requests financing with its own invoice
+  // 2. Sierra Verde creates its business account, sees its overview and requests financing
   await nav(page, 'Raise capital')
-  await say(page, 'A coffee exporter in Colombia signs up', 'Sierra Verde enters its own details. The registration number is how the credit bureau finds its file.')
+  await say(page, 'A coffee exporter in Colombia creates its business account', 'At /business, Sierra Verde enters its own details. The registration number is how the credit bureau finds its file.')
+  await audit(page, 'business: sign up')
   await signUpBusiness(page, {
     name: 'Sierra Verde Coffee Exporters',
     country: 'CO',
@@ -520,6 +610,9 @@ async function main() {
     bank: 'Bancolombia 112-345678-90',
     email: 'finance@sierraverde.co',
   })
+  await point(page, page.locator('dl.tiles'))
+  await say(page, 'Its business overview', 'Totals, the next item due, every document with its status, and recent reviews. Nothing yet.')
+  await audit(page, 'business: overview (empty)')
   await caption(page, 'It requests financing for an unpaid invoice', 'INV-2026-0142: EUR 9,250 owed by Kaffeehaus Berlin, due in 60 days. The PDF is attached and its fingerprint goes into the document hash.')
   const link1 = await requestFinancing(page, {
     number: 'INV-2026-0142',
@@ -536,7 +629,7 @@ async function main() {
   await say(page, 'Nothing is listed until the buyer confirms', 'The app creates a link for the buyer. Sierra Verde emails it to Kaffeehaus Berlin.')
   await audit(page, 'business: waiting for buyer')
 
-  // 3. The buyer confirms; the listing workflow reviews it live
+  // 3. The buyer confirms; the listing workflow reviews it live on the overview
   await caption(page, 'The buyer opens the link', 'Kaffeehaus Berlin checks the supplier, amount, dates and the attached file.')
   await open(page, link1)
   await sleep(2500)
@@ -560,8 +653,11 @@ async function main() {
     `Listed: grade ${d0.grade}, ${pct(d0.aprBps)} APR, ${usd(d0.target ?? 0)} advance`,
     `Priced with the Chainlink EUR/USD Data Feed at ${(Number(d0.fxRateE8) / 1e8).toFixed(4)}, then written onchain through the CRE forwarder.`,
   )
-  await audit(page, 'business: listed')
   await closeRun(page, review1.row)
+  await reveal(docRow(page, 'INV-2026-0142'))
+  await point(page, docRow(page, 'INV-2026-0142').locator('.state'))
+  await say(page, 'The overview shows it listed', 'Status Listed, with a link to its loan page.')
+  await audit(page, 'business: listed')
   await showTerminal(
     page,
     run,
@@ -571,6 +667,7 @@ async function main() {
   await showTx(page, d0.tx, 'The listing report onchain', 'Delivered through the CRE forwarder to the market contract: LoanListed, and the loan gets its own ERC-3643 token.')
 
   // 4. A second invoice, which the buyer disputes
+  await toTop(page)
   await caption(page, 'A second invoice: EUR 50,000 to Northbrook Trading, UK', 'Same business, a different buyer.')
   const link2 = await requestFinancing(page, {
     number: 'INV-2026-0999',
@@ -594,35 +691,39 @@ async function main() {
   await audit(page, 'buyer portal (disputed)')
   await caption(page, 'The listing workflow rejects it', 'A dispute is a hard stop: nothing is written onchain.')
   const review2 = await watchReview(page, after)
-  await say(page, 'Not approved: buyer disputed the document', "Sierra Verde sees the reason and the buyer's note.")
   await closeRun(page, review2.row)
-  await reveal(panel(page, 'Your requests'), 'start')
-  await sleep(2500)
-  await audit(page, 'business: requests')
+  await reveal(docRow(page, 'INV-2026-0999'))
+  await point(page, docRow(page, 'INV-2026-0999').locator('.state'))
+  await say(page, 'Not approved: buyer disputed the document', "Sierra Verde sees the reason and the buyer's note on its overview.")
+  await audit(page, 'business: overview with both documents')
 
-  // 5. The marketplace
-  await nav(page, 'Marketplace')
-  await say(page, 'The loan is on the marketplace', 'Lenders see the grade, APR, term and funding progress. Never the credit file.')
-  await click(page, page.locator('a.loan').first())
-  await say(page, 'The loan page', "What was verified, the reference rate used at listing, the loan's own ERC-3643 token, and where the loan is in its life.")
-  await audit(page, 'loan page (open)')
-
-  // 6. Ana signs up and funds EUR 3,000 by bank transfer
-  const loan1 = await waitLoan('INV-2026-0142')
-  const fund = panel(page, 'Fund this loan')
-  await reveal(fund, 'start')
-  await caption(page, 'Ana lends from her bank account', 'She signs up on the Bank transfer tab: name, email, country and the account her repayments go to.')
+  // 5. Ana starts investing by bank transfer: sign up, KYC, the marketplace
+  await caption(page, 'Investors start at /investor', 'Ana invests from her bank account: name, email, country and the account her repayments go to.')
+  await enter(page, 'Invest')
+  await audit(page, 'investor: start')
   await type(page, page.locator('#lend-bank-name'), 'Ana Ruiz')
   await type(page, page.locator('#lend-bank-email'), 'ana.ruiz@example.com')
   await choose(page, page.locator('#lend-bank-country'), 'ES')
   await type(page, page.locator('#lend-bank-bankAccount'), 'ES91 2100 0418 4502 0005 1332')
   after = await latestRunId()
-  await click(page, button(page, 'Verify identity to lend'))
-  await caption(page, 'KYC over Confidential HTTP', 'The lender workflow fetches her KYC file over Confidential HTTP (the API secret is injected by the capability, not held in workflow code), then writes an ERC-3643 identity claim onchain.')
-  await waitRun(after, 'verify-lender')
-  await page.locator('#fiat-amount').waitFor({ timeout: 60_000 })
-  await sleep(1500)
-  await caption(page, 'Verified. She funds EUR 3,000', 'Transfer details with a reference, like any bank payment.')
+  await click(page, button(page, 'Verify identity to invest'))
+  await caption(page, 'Signed in. KYC runs over Confidential HTTP', 'Her portfolio opens while the lender workflow fetches her KYC file (the API secret is injected by the capability, not held in workflow code), then writes an ERC-3643 identity claim onchain.')
+  await watchKyc(page, after)
+  await reveal(panel(page, 'Identity'))
+  await say(page, 'Verified', 'Her wallet is in the ERC-3643 identity registry, so it can hold loan notes. Funding opens.')
+  await audit(page, 'investor: portfolio (verified, empty)')
+  await nav(page, 'Marketplace')
+  await say(page, 'The marketplace', 'Open loans with grade, APR, term and funding progress. Never the credit file.')
+  await audit(page, 'investor: marketplace')
+  await click(page, page.locator('a.loan').first())
+  await say(page, 'The loan page', "What was verified, the reference rate used at listing, the loan's own ERC-3643 token, and a funding panel for her own method.")
+  await audit(page, 'investor: loan page (open)')
+
+  // 6. Ana funds EUR 3,000 by bank transfer
+  const loan1 = await waitLoan('INV-2026-0142')
+  const fund = panel(page, 'Fund this loan')
+  await reveal(fund, 'start')
+  await caption(page, 'She funds EUR 3,000 by bank transfer', 'Transfer details with a reference, like any bank payment.')
   await type(page, page.locator('#fiat-amount'), '3000')
   await click(page, button(page, 'Get transfer details'))
   await button(page, "I've sent the transfer").waitFor({ timeout: 30_000 })
@@ -632,37 +733,58 @@ async function main() {
   await caption(
     page,
     'CRE instructs the on-ramp',
-    'The bank reports the transfer. The workflow checks KYC, sets a price limit from the EUR/USD Data Feed, instructs the on-ramp to convert and deliver USDC to the market over Confidential HTTP, then verifies it arrived.',
+    'The bank reports the transfer. The workflow checks KYC, sets a price limit from the EUR/USD Data Feed, instructs the on-ramp over Confidential HTTP to convert it into USDC in the market, then verifies it arrived.',
   )
   run = await waitRun(after, 'credit-fiat-deposit')
   await page.getByText('in loan notes issued').first().waitFor({ timeout: 30_000 }).catch(() => {})
+  await panel(page, 'Your position').waitFor({ timeout: 30_000 }).catch(() => {})
   await say(page, 'Ana holds loan notes', `ERC-3643 tokens, one token per loan (this one is TFN${loan1.id}), minted through the CRE forwarder. Only wallets in the identity registry can hold them.`)
-  await audit(page, 'loan page: bank transfer credited')
+  await audit(page, 'investor: loan page, bank transfer credited')
   await showTx(page, run.resultData?.tx, 'The funding report onchain', 'FiatFunding, written through the CRE forwarder after the deposit checks passed.')
+  await nav(page, 'Portfolio')
+  await reveal(panel(page, 'Positions'), 'start')
+  await point(page, positionRow(page, 'INV-2026-0142'))
+  await say(page, 'Her portfolio', 'The position with its notes, principal and expected payout, and the deposit, converted and credited.')
+  await reveal(panel(page, 'Deposits'))
+  await sleep(1800)
+  await audit(page, 'investor: Ana portfolio (funded)')
 
   // 7. Ben connects a wallet, signs up and funds the rest in USDC
-  await reveal(fund, 'start')
+  await toTop(page)
+  await caption(page, 'Ana signs out. Ben invests in USDC from a wallet', 'One browser here, so each investor signs in to their own portfolio.')
+  await signOut(page)
   await click(page, page.getByRole('tab', { name: 'USDC' }))
   await say(
     page,
-    'Ben lends USDC from a wallet',
+    'He connects a wallet first',
     cfg.builtinWallets
-      ? 'No browser wallet can reach this local chain, so the app gives this browser its own wallet and signs for it on the server. On Sepolia lenders connect their own.'
-      : 'He connects his own wallet and signs each transaction in it.',
+      ? 'No browser wallet can reach this local chain, so the app gives this browser its own wallet and signs for it on the server. On Sepolia investors connect their own.'
+      : 'He connects his own wallet and signs a message that proves it is his. No transaction is sent.',
   )
-  await click(page, button(page, /Create a wallet|Connect wallet/))
-  await page.locator('#lend-usdc-name').waitFor({ timeout: 30_000 })
-  await type(page, page.locator('#lend-usdc-name'), 'Ben Carter')
-  await type(page, page.locator('#lend-usdc-email'), 'ben.carter@example.com')
-  await choose(page, page.locator('#lend-usdc-country'), 'US')
-  after = await latestRunId()
-  await click(page, button(page, 'Verify identity to lend'))
-  await caption(page, 'Same KYC workflow, for a wallet', 'Approved, and an ERC-3643 identity claim registers the wallet onchain.')
-  await waitRun(after, 'verify-lender')
-  await page.locator('#usdc-amount').waitFor({ timeout: 60_000 })
-  await sleep(1500)
+  await click(page, button(page, /^(Create a wallet|Connect wallet)$/))
+  const usdcForm = page.locator('#lend-usdc-name')
+  const known = button(page, /^Sign in with /)
+  await Promise.race([usdcForm.waitFor({ timeout: 30_000 }), known.waitFor({ timeout: 30_000 })]).catch(() => {})
+  if (await usdcForm.isVisible().catch(() => false)) {
+    await type(page, usdcForm, 'Ben Carter')
+    await type(page, page.locator('#lend-usdc-email'), 'ben.carter@example.com')
+    await choose(page, page.locator('#lend-usdc-country'), 'US')
+    after = await latestRunId()
+    await click(page, button(page, 'Verify identity to invest'))
+    await caption(page, 'Same KYC workflow, for a wallet', 'Approved, and an ERC-3643 identity claim registers the wallet onchain.')
+  } else {
+    // This wallet already has an investor account on this deployment: it signs in instead.
+    after = await latestRunId()
+    await click(page, known)
+    await caption(page, 'Ben signs in with his wallet', 'This wallet already has an investor account.')
+  }
+  await watchKyc(page, after)
+  await nav(page, 'Marketplace')
+  await click(page, page.locator('a.loan', { hasText: 'Sierra Verde' }).first())
+  await reveal(fund, 'start')
   await caption(page, 'Get USDC, then fund the rest', 'Each step is a wallet transaction: the faucet, then approve and fund.')
-  await page.locator('.balance b', { hasText: '$' }).waitFor({ timeout: 30_000 })
+  await page.locator('#usdc-amount').waitFor({ timeout: 60_000 })
+  await fund.locator('.balance b', { hasText: '$' }).waitFor({ timeout: 30_000 })
   await sleep(600)
   const getUsdc = button(page, 'Get USDC')
   if (await getUsdc.isVisible().catch(() => false)) {
@@ -685,8 +807,19 @@ async function main() {
   await sleep(2500)
   await toTop(page)
   await say(page, 'Paid out to Sierra Verde', `${usd(loan1.target)} advanced, in fiat, to its bank account.`)
-  await audit(page, 'loan page: paid out')
+  await reveal(panel(page, 'Your position'), 'start')
+  await sleep(1800)
+  await audit(page, 'investor: loan page, paid out')
   await showTx(page, run.resultData?.tx, 'The payout report onchain', 'Written after the fiat payout was confirmed. It releases the USDC and starts the loan clock.')
+
+  // The business sees the payout on its overview
+  await caption(page, "Sierra Verde's overview", 'Advanced to date, what its buyer owes, and the next due date.')
+  await enter(page, 'Raise capital')
+  await point(page, page.locator('dl.tiles'))
+  await say(page, "Sierra Verde's overview", 'Advanced to date, what its buyer owes, and the next due date.')
+  await reveal(panel(page, 'Next due'))
+  await sleep(1500)
+  await audit(page, 'business: overview, paid out')
 
   // 8. The buyer pays through the same link; two sources must agree
   await caption(page, 'The buyer pays through the same link', 'The full invoice amount, in euros, to the collection account.')
@@ -703,20 +836,44 @@ async function main() {
   await page.getByText('Payment received').first().waitFor({ timeout: 180_000 })
   await sleep(2000)
   await audit(page, 'buyer portal: paid')
-  await caption(page, 'Repaid. Ana is paid back to her bank', 'The Repaid event triggers another settlement run that pays bank-transfer lenders.')
+  await caption(page, 'Repaid. Ana is paid back to her bank', 'The Repaid event triggers another settlement run that pays bank-transfer investors.')
   await waitRun(after, 'redeem-fiat-lenders')
-  await open(page, `${BASE}/loans/${loan1.id}`)
-  await reveal(panel(page, 'Repaid'), 'start')
-  await say(page, 'Ben claims his share from his wallet', 'Advance plus interest, paid in USDC.')
-  await click(page, button(page, /^Claim \$/))
-  await page.locator('.progress-list li.done', { hasText: /^Claimed/ }).first().waitFor({ timeout: 90_000 })
-  await sleep(1500)
-  await reveal(panel(page, 'Lifecycle'), 'start')
-  await say(page, 'Every step of the loan, settled', 'Verified, funded by bank transfer and USDC, paid out, repaid, and lenders paid back.')
-  await audit(page, 'loan page: repaid and claimed')
 
-  // 9. Operations: the reserve check and the circuit breaker
-  await nav(page, 'Operations')
+  // 9. Both investors see it in their portfolios: Ana paid to her bank, Ben claims
+  await caption(page, 'Each investor sees the repayment in their portfolio', 'Ana first: Ben signs out and she signs in with her email.')
+  await open(page, `${BASE}/investor`)
+  await page.locator('dl.tiles').waitFor({ timeout: 30_000 })
+  await sleep(1500)
+  await signOut(page)
+  await signInByEmail(page, 'ana.ruiz@example.com')
+  await positionRow(page, 'INV-2026-0142').getByText('Paid to your bank').waitFor({ timeout: 60_000 })
+  await point(page, page.locator('dl.tiles'))
+  await sleep(1200)
+  await point(page, positionRow(page, 'INV-2026-0142').locator('.cell-status'))
+  await say(page, 'Ana: paid to her bank', 'Received, with the payout reference. Her notes were redeemed.')
+  await audit(page, 'investor: Ana portfolio (repaid)')
+  await toTop(page)
+  await caption(page, 'Ben signs in with his wallet', 'Signing in proves the wallet is his.')
+  await signOut(page)
+  await signInWithWallet(page)
+  const claim = button(page, /^Claim \$/)
+  await claim.waitFor({ timeout: 60_000 })
+  await point(page, page.locator('dl.tiles'))
+  await say(page, 'Ready to claim', 'Advance plus interest in USDC. Ben claims it from his portfolio, a wallet transaction that burns his notes.')
+  await click(page, claim)
+  await positionRow(page, 'INV-2026-0142').locator('.state.good', { hasText: /^Claimed/ }).waitFor({ timeout: 90_000 })
+  await sleep(2500)
+  await point(page, page.locator('dl.tiles'))
+  await say(page, 'Claimed', 'Received shows it, and nothing is left to claim.')
+  await audit(page, 'investor: Ben portfolio (claimed)')
+  await click(page, positionRow(page, 'INV-2026-0142').locator('a.title-link'))
+  await reveal(panel(page, 'Lifecycle'), 'start')
+  await say(page, 'Every step of the loan, settled', 'Verified, funded by bank transfer and USDC, paid out, repaid, and investors paid back.')
+  await audit(page, 'investor: loan page, repaid and claimed')
+
+  // 10. Operations, from the footer: the reserve check and the circuit breaker
+  await caption(page, 'Operations: the reserve check', 'The monitor is a cron workflow; Run check fires the same trigger now. Bank books, on-ramp mints and onchain credits must agree.')
+  await operations(page)
   await say(page, 'Operations: the reserve check', 'The monitor is a cron workflow; Run check fires the same trigger now. Bank books, on-ramp mints and onchain credits must agree.')
   after = await latestRunId()
   await click(page, button(page, 'Run check'))
@@ -730,6 +887,8 @@ async function main() {
   await caption(page, 'Now the bank books a deposit that never reached the chain', 'An operator tool records it, so the books disagree.')
   await click(page, page.locator('details.tools > summary'))
   await click(page, button(page, 'Book unmatched deposit'))
+  // Booking adds Correct the books where this button was; keep the cursor on the button just used.
+  await point(page, button(page, 'Book unmatched deposit'))
   await sleep(1800)
   await toTop(page)
   await click(page, button(page, 'Run check'))
@@ -759,10 +918,14 @@ async function main() {
   await say(page, 'Books agree again', 'The check passes and funding is open.')
   await audit(page, 'operations: resumed')
 
-  // 10. A riskier business with a 1-day invoice, which is not paid on time
+  // 11. A riskier business with a 1-day invoice, which is not paid on time
+  await caption(page, "Sierra Verde's overview, after repayment", 'Advanced, repaid, and nothing owed.')
   await nav(page, 'Raise capital')
-  await caption(page, 'A second business: Rapid Parts Trading, UAE', 'It signs up the same way, with its own registration number.')
-  await click(page, button(page, 'Switch business'))
+  await point(page, page.locator('dl.tiles'))
+  await say(page, "Sierra Verde's overview, after repayment", 'Advanced, repaid, and nothing owed.')
+  await audit(page, 'business: overview, repaid')
+  await caption(page, 'A second business: Rapid Parts Trading, UAE', 'Sierra Verde signs out, and Rapid Parts creates its own account with its own registration number.')
+  await signOut(page)
   await signUpBusiness(page, {
     name: 'Rapid Parts Trading',
     country: 'AE',
@@ -794,13 +957,20 @@ async function main() {
   const d3 = review3.run.resultData ?? {}
   await say(page, `Listed: grade ${d3.grade}, ${pct(d3.aprBps)} APR, ${usd(d3.target ?? 0)} advance`, 'A USD invoice needs no conversion.')
   await closeRun(page, review3.row)
+  await caption(page, 'Ben finds it in the marketplace', 'He is still signed in to the investor portal.')
+  await enter(page, 'Invest')
   await nav(page, 'Marketplace')
   await click(page, page.locator('a.loan', { hasText: 'Rapid Parts Trading' }).first())
-  await reveal(panel(page, 'Fund this loan'), 'start')
-  await click(page, page.getByRole('tab', { name: 'USDC' }))
+  await reveal(fund, 'start')
   await caption(page, 'Ben funds it in full from his wallet', 'Already verified, so it is one amount and one click.')
   await page.locator('#usdc-amount').waitFor({ timeout: 30_000 })
+  await fund.locator('.balance b', { hasText: '$' }).waitFor({ timeout: 30_000 })
   await click(page, button(page, 'Fund the rest'))
+  if (await getUsdc.isVisible().catch(() => false)) {
+    await click(page, getUsdc)
+    await page.getByText('USDC added to your wallet').first().waitFor({ timeout: 90_000 })
+    await sleep(1500)
+  }
   after = await latestRunId()
   await click(page, button(page, /^Fund \$/))
   await waitLoan('INV-2026-0388', (l) => Number(l.status) >= 2, 120_000)
@@ -810,45 +980,73 @@ async function main() {
   await sleep(2000)
   await toTop(page)
   const maturity = Number(loan3.maturity)
-  const countdown = async () => {
-    const left = Math.max(0, maturity + 2 - (await chainTime(cfg.rpcUrl)))
-    await caption(
-      page,
-      'The buyer does not pay',
-      `On this deployment the loan clock runs one day per minute. The 1-day term ends in ${left} s, then the cron monitor finds it past due.`,
-    )
-    return left
+  const clock = (left: number) => (left > 0 ? `The 1-day term ends in ${left} s.` : 'The 1-day term has ended.')
+  /** Holds a caption for up to `holdMs` while the loan clock runs, with the seconds left in it. */
+  const countdown = async (title: string, body: (clockText: string) => string, holdMs: number) => {
+    const end = Date.now() + holdMs
+    for (;;) {
+      const left = Math.max(0, maturity + 2 - (await chainTime(cfg.rpcUrl)))
+      await caption(page, title, body(clock(left)))
+      if (left === 0 || Date.now() >= end) return left
+      await sleep(1000)
+    }
   }
-  await countdown()
-  await sleep(2500)
+  const unpaid = (c: string) => `On this deployment the loan clock runs one day per minute. ${c} Then the cron monitor finds it past due.`
+  await countdown('The buyer does not pay', unpaid, 2500)
   await reveal(panel(page, 'Lifecycle'), 'start')
-  for (let i = 0; i < 6 && (await countdown()) > 0; i++) await sleep(1000)
-  await nav(page, 'Raise capital')
-  for (let i = 0; i < 8 && (await countdown()) > 0; i++) await sleep(1000)
-  await nav(page, 'Operations')
-  while ((await countdown()) > 0) await sleep(1000)
+  await countdown('The buyer does not pay', unpaid, 6000)
+  const active = (c: string) => `Notes, principal, expected payout and the due date. ${c}`
+  await countdown("Ben's portfolio: the position is active", active, 0)
+  await nav(page, 'Portfolio')
+  await point(page, positionRow(page, 'INV-2026-0388'))
+  await countdown("Ben's portfolio: the position is active", active, 8000)
+  await audit(page, 'investor: Ben portfolio (active)')
+  const owed = (c: string) => `${usd(loan3.target)} advanced, and the buyer owes the full USD 4,000. ${c}`
+  await countdown("Rapid Parts' overview", owed, 0)
+  await enter(page, 'Raise capital')
+  await point(page, page.locator('dl.tiles'))
+  await countdown("Rapid Parts' overview", owed, 4500)
+  await point(page, panel(page, 'Next due'))
+  await countdown("Rapid Parts' overview", (c) => `Next due: Gulf Auto Services, through the buyer link. ${c}`, 4500)
+  await audit(page, 'business: overview, payment due')
+  const waits = (c: string) => `Run check fires the cron trigger as soon as the term ends. ${c}`
+  await countdown('Operations waits for the monitor', waits, 0)
+  await operations(page)
+  await countdown('Operations waits for the monitor', waits, Infinity)
   after = await latestRunId()
   await click(page, button(page, 'Run check'))
+  await caption(page, 'The monitor finds the loan past due', 'The same cron workflow as the reserve check, now with a loan past its maturity.')
   row = await openNewestRun(page, 'Automated checks')
   run = await waitRun(after, 'watch-and-reconcile')
   await sleep(2000)
   await say(page, 'Late, the token paused, the business frozen', "The monitor marks the loan Late, which pauses the loan's ERC-3643 token, and freezes Rapid Parts so it cannot list again until it settles.")
   await closeRun(page, row)
   await showTx(page, run.resultData?.statusChanges?.[0]?.tx, 'Late status onchain', 'StatusChanged and BorrowerFrozen, and the loan token paused, in one report from the monitor.')
+  const frozen = 'The invoice is overdue, so new requests cannot be listed until it is settled.'
+  await caption(page, 'Rapid Parts sees why on its overview', frozen)
   await nav(page, 'Raise capital')
-  await sleep(1500)
-  await say(page, 'Rapid Parts sees why', 'New requests cannot be listed until the overdue invoice is settled.')
+  await page.locator('.banner.bad').waitFor({ timeout: 30_000 }).catch(() => {})
+  await point(page, page.locator('.banner.bad'))
+  await say(page, 'Rapid Parts sees why on its overview', frozen)
   await audit(page, 'business: frozen')
+  const late = 'Late, with the date it went overdue. His notes in this loan are paused.'
+  await caption(page, 'Ben sees it in his portfolio', late)
+  await enter(page, 'Invest')
+  await positionRow(page, 'INV-2026-0388').getByText('Late').first().waitFor({ timeout: 30_000 }).catch(() => {})
+  await point(page, positionRow(page, 'INV-2026-0388'))
+  await say(page, 'Ben sees it in his portfolio', late)
+  await audit(page, 'investor: Ben portfolio (late)')
 
-  // 11. Finale
-  await nav(page, 'Marketplace')
-  await say(
-    page,
+  // 12. Finale
+  const finale = [
     'Tradeflow, run by four Chainlink CRE workflows',
-    'A TEE-declared handler for credit files, Confidential HTTP for KYC and bank APIs, ERC-3643 loan tokens with CRE as the KYC claim issuer, the EUR/USD Data Feed, log and cron triggers, two-source consensus. Built by CodeDecoders, the team behind GSOS.',
-    3000,
-  )
-  await audit(page, 'marketplace (final)')
+    'A TEE-declared handler for credit files, Confidential HTTP for KYC and for instructing the on-ramp, ERC-3643 loan tokens with CRE as the KYC claim issuer, the EUR/USD Data Feed, log and cron triggers, two-source consensus. Built by CodeDecoders, the team behind GSOS.',
+  ] as const
+  await caption(page, ...finale)
+  await click(page, page.locator('header.top a.wordmark'))
+  await sleep(900)
+  await say(page, ...finale, 3000)
+  await audit(page, 'landing (final)')
 
   const video = page.video()
   await context.close()
