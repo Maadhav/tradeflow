@@ -19,9 +19,9 @@ Four workflows, every core capability, each doing a real job:
 | Workflow | Trigger | CRE capabilities | What it decides |
 |---|---|---|---|
 | `listing` | HTTP (the buyer confirms or disputes a document) | **Confidential Workflow (TEE)** with `handlerInTee`, HTTP inside the enclave, **EVM read** of the Chainlink EUR/USD Data Feed and the market, **EVM write** | Registry check (document found, buyer confirmed, not disputed), sanctions screen and a credit scorecard on the business's private credit file, in a handler declared for TEE execution (AWS Nitro) on a deployed DON (`cre workflow simulate` runs it locally). Only derived values cross back: grade, APR, advance, document hash. On the DON it refuses a document the market has already financed, prices non-USD documents with the FX feed and lists the loan. |
-| `lender` | HTTP (KYC done; deposit settled) | **Confidential HTTP** (Vault DON secret injected only in the enclave, single execution), EVM read of the Chainlink feed and the market, EVM write | KYC allowlist for the loan notes. For bank-transfer funding: fetches the deposit and KYC file confidentially, rejects the on-ramp's FX rate if it deviates from Chainlink EUR/USD by more than 1%, recomputes the stablecoin amount and confirms it really reached the market before crediting notes. |
+| `lender` | HTTP (KYC done; deposit settled) | **Confidential HTTP** (Vault DON secret injected only in the enclave, single execution), EVM read of the Chainlink feed, the market and the ERC-3643 identity registry, EVM write | KYC: reports the lender's verified wallet and KYC country (ISO 3166 numeric), and the market registers it in the **ERC-3643 identity registry** with a KYC claim issued by CRE. For bank-transfer funding: fetches the deposit and KYC file confidentially, rejects the on-ramp's FX rate if it deviates from Chainlink EUR/USD by more than 1%, recomputes the stablecoin amount and confirms it really reached the market and the wallet is verified before crediting loan notes. |
 | `settlement` | **EVM log** (`LoanFullyFunded`, `Repaid`) and HTTP (payment notice) | Log triggers, HTTP with consensus, `runInNodeMode` across two sources, EVM read of the Chainlink feed and the market, EVM write | Pays the business in fiat when a loan is fully funded (idempotent payout, then releases USDC to the off-ramp). Confirms the buyer's payment of the full document amount only when the collection bank **and** the buyer's payment processor agree on every node, values it with the Chainlink EUR/USD feed, marks the loan repaid with the lenders' share (advance plus interest) and pays the balance to the business. Pays bank-transfer lenders back to their bank when a loan is repaid. |
-| `monitor` | **Cron** | EVM read, HTTP with consensus, EVM write | Marks overdue loans Late (then Defaulted) and freezes the business. Three-way reconciliation every run: bank books = on-ramp mints = credited onchain, plus solvency. Any mismatch pauses new funding onchain (circuit breaker). |
+| `monitor` | **Cron** | EVM read, HTTP with consensus, EVM write | Marks overdue loans Late (then Defaulted), which pauses the loan's ERC-3643 token, and freezes the business. Three-way reconciliation every run: bank books = on-ramp mints = credited onchain, plus solvency. Any mismatch pauses new funding onchain (circuit breaker). |
 
 Policy is enforced onchain, never trusted from a report: the market rejects grades or APRs outside
 owner policy, frozen businesses, replayed references, and fiat credits whose stablecoins are not
@@ -34,7 +34,7 @@ actually in the contract.
  lender (bank) ──► on-ramp mints USDC ──► lender (Conf. HTTP) ──FiatFunding───────┤
  lender (own wallet) ────────────────────────────── approve + fund() ─────────────┤
                                                                                   ▼
-                                  TradeflowMarket  (CRE ReceiverTemplate, KYC-gated ERC-1155 notes)
+                                  TradeflowMarket  (CRE ReceiverTemplate, one ERC-3643 token per loan)
                                        │ LoanFullyFunded            │ Repaid
                                        ▼                            ▼
                              settlement: pay business      settlement: repay fiat lenders
@@ -42,8 +42,9 @@ actually in the contract.
  cron ──► monitor: late/default + three-way reconciliation ──► circuit breaker
 ```
 
-- `contracts/`: Foundry. `TradeflowMarket` (receiver via Chainlink's `ReceiverTemplate`),
-  `LoanNotes` (ERC-1155, transferable only between KYC-verified holders), `TestStablecoin`.
+- `contracts/`: Foundry. `TradeflowMarket` (receiver via Chainlink's `ReceiverTemplate`), which
+  deploys an ERC-3643 (T-REX) token per loan; the shared ERC-3643 identity registry and
+  `CreClaimIssuer` (see [Tokenization](#tokenization-erc-3643)); `TestStablecoin`.
 - `cre/`: the CRE project (`listing`, `lender`, `settlement`, `monitor`), TypeScript SDK.
 - `services/rails/`: the off-chain world the workflows talk to (document registry, credit bureau,
   sanctions, KYC, on-ramp, collection bank, payment processor, payout provider, operator books),
@@ -70,20 +71,47 @@ actually in the contract.
 4. **Lenders sign up on a loan page.** Bank transfer: name, email, country and the bank account for
    repayments. USDC: connect a wallet and prove it is yours (a browser wallet signs a one-time
    message, which sends no transaction), then name, email and country. KYC runs through the `lender`
-   workflow, which verifies the wallet for loan notes onchain.
+   workflow, which registers the wallet in the ERC-3643 identity registry, so it can hold loan notes.
 5. **They fund.** Bank transfer: transfer details, then the deposit lands, the on-ramp mints USDC
    into the market and the `lender` workflow checks it before crediting notes. USDC: the wallet
-   signs `approve` and `fund` (and the faucet `drip` when it holds no USDC).
+   signs `approve` and `fund` (and the faucet `drip` when it holds no USDC). Either way the market
+   mints the loan's ERC-3643 token (`TFN<id>`) to the lender's wallet, one note per USDC unit.
 6. **Fully funded**: `settlement` pays the business in fiat and starts the loan clock.
 7. **The buyer pays the full document amount through the same link**, in the document's currency,
    to the collection account. The on-ramp converts the lenders' share (advance plus interest) into
    USDC in the market. `settlement` confirms the payment with the collection bank and the payment
    processor, values it with the EUR/USD feed, marks the loan repaid with the lenders' share, pays
    the balance to the business and pays bank-transfer lenders back to their bank; USDC lenders
-   `claim` from their wallet.
-8. **`monitor`** marks overdue loans late (and freezes the business), and pauses new funding if the
+   `claim` from their wallet. Both burn the lender's notes.
+8. **`monitor`** marks overdue loans late (which pauses the loan's token, and freezes the business), and pauses new funding if the
    bank books, the on-ramp books and the market ever disagree. Operations can book an unmatched
    deposit to see it trip, correct the books and resume.
+
+## Tokenization: ERC-3643
+
+Loan notes are permissioned security tokens under **ERC-3643 (T-REX)**, the standard for tokens
+that only verified investors may hold.
+
+- **One token per loan.** When the `listing` report lands, the market deploys the loan's own T-REX
+  token: an ERC-20 with 6 decimals named `Tradeflow Loan Note <id>`, symbol `TFN<id>`
+  (`market.loanToken(id)`, event `LoanTokenDeployed`). Funding mints notes 1:1 with the USDC lent;
+  a `claim` or a fiat redemption burns them. A lender's holding of loan N is
+  `IERC20(loanToken(N)).balanceOf(lender)`.
+- **One shared identity registry.** Every loan token checks the same ERC-3643 identity registry
+  (`market.identityRegistry()`). A wallet is verified when `isVerified(wallet)` is true.
+- **ONCHAINID identities.** Each verified lender gets an ONCHAINID identity, registered with the ISO
+  3166 numeric code of their KYC country, holding a KYC claim (event `IdentityRegistered`). A KYC
+  country without a numeric code is refused by the workflow, never registered as 0.
+- **CRE as the trusted claim issuer.** The KYC claim is issued by `CreClaimIssuer`, the registry's
+  trusted issuer, and is written only through `lender` workflow reports (action 2, `VerifyLender`:
+  `(address lender, bool verified, bytes32 kycRef, uint16 country)`).
+- **Pause on delinquency.** When `monitor` marks a loan Late or Defaulted, its token is paused and
+  notes stop moving; Repaid unpauses it.
+
+`contracts/deployments/<name>.json` holds `chainId`, `forwarder`, `market`, `stablecoin`,
+`identityRegistry` and `claimIssuer`; loan tokens are found through the market. The app shows each
+loan's token on the loan page (Verification, Loan notes) and `/api/state` returns it per loan
+(`loanToken`).
 
 **Wallets.** On Sepolia the app uses the lender's browser wallet. Locally (no browser wallet can
 reach the anvil fork) each browser gets **its own built-in wallet**: a fresh key held in the
@@ -146,7 +174,7 @@ Contracts: `cd contracts && forge test`.
 | `POST /api/onramp/intent`, `/deposit-received` | Bank-transfer funding |
 | `POST /api/wallet/builtin`, `GET /api/wallet/:address`, `POST /api/wallet/send`, `GET /api/tx/:hash` | A browser's own built-in wallet (local only; `x-wallet-key`), balances, signing, transaction status |
 | `POST /api/monitor/run`, `/api/ops/book-unmatched-deposit`, `/api/ops/correct-books`, `/api/ops/resume` | Operations |
-| `GET /api/state`, `GET /api/runs`, `GET /api/runs/:id`, `GET /api/config` | Public state (never emails, bank accounts, buyer links or keys) and workflow runs |
+| `GET /api/state`, `GET /api/runs`, `GET /api/runs/:id`, `GET /api/config` | Public state (never emails, bank accounts, buyer links or keys; each loan with its ERC-3643 `loanToken`), workflow runs, and the deployment (`identityRegistry`, `claimIssuer`) |
 
 ## Evidence
 

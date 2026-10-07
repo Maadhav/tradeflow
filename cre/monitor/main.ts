@@ -3,11 +3,12 @@
 // Trigger: cron.
 // 1. Reads every loan's state and maturity onchain. A disbursed loan past maturity is marked
 //    Late and its business is frozen (no new listings); a loan still unpaid after the grace
-//    period is marked Defaulted.
+//    period is marked Defaulted. The market pauses a late or defaulted loan's ERC-3643 token, so
+//    its notes stop moving until the loan is repaid.
 // 2. Reconciles three independent records of fiat-funded money:
 //      a. cash received, per the bank's books
 //      b. stablecoins minted for those deposits, per the on-ramp's books
-//      c. stablecoins credited to lenders as loan notes, per the market contract
+//      c. stablecoins credited to lenders as loan notes (ERC-3643 tokens), per the market contract
 //    and checks the market is solvent (stablecoins held >= reserved obligations).
 //    Any mismatch is reported onchain and the market pauses new funding until an operator
 //    investigates.
@@ -26,7 +27,7 @@ import {
 } from '@chainlink/cre-sdk'
 import { encodeAbiParameters, keccak256, parseAbiParameters } from 'viem'
 import { z } from 'zod'
-import { Action, Status, baseConfig, bigintJson, erc20Abi, marketAbi, read, writeAction } from './lib'
+import { Action, Status, baseConfig, bigintJson, erc20Abi, loanTokenAbi, loanTokenOf, marketAbi, read, tokenSymbol, writeAction } from './lib'
 
 const configSchema = baseConfig.extend({
   schedule: z.string(),
@@ -67,8 +68,12 @@ const onSchedule = (runtime: Runtime<Config>): string => {
           Action.LoanStatus,
           encodeAbiParameters(parseAbiParameters('uint256 loanId, uint8 newStatus, bool freezeBorrower'), [loanId, next, true]),
         )
-        runtime.log(`loan ${loanId} ${next === Status.Late ? 'is past maturity: marked late' : 'is past the grace period: marked defaulted'}, business frozen`)
-        actions.push({ loanId, status: next === Status.Late ? 'late' : 'defaulted', businessFrozen: true, tx })
+        const tokenPaused = read<boolean>(runtime, loanTokenOf(runtime, loanId), loanTokenAbi, 'paused')
+        runtime.log(
+          `loan ${loanId} ${next === Status.Late ? 'is past maturity: marked late' : 'is past the grace period: marked defaulted'}, business frozen, ` +
+            `ERC-3643 token ${tokenSymbol(loanId)} ${tokenPaused ? 'paused' : 'still transferable'}`,
+        )
+        actions.push({ loanId, status: next === Status.Late ? 'late' : 'defaulted', businessFrozen: true, tokenPaused, tx })
       }
     }
   }

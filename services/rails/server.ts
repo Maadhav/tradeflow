@@ -442,13 +442,8 @@ function runKyc(l: Lender) {
   const input = { lenderId: l.id }
   return inFlight(WF.kyc.handler, JSON.stringify(input))?.id ?? bridge.start({ ...WF.kyc, httpPayload: input }).run.id
 }
-const isVerified = (wallet: Address) =>
-  chain.publicClient.readContract({
-    address: deployment.notes,
-    abi: [parseAbiItem('function isVerifiedHolder(address) view returns (bool)')],
-    functionName: 'isVerifiedHolder',
-    args: [wallet],
-  })
+/** Verified onchain: the wallet is in the ERC-3643 identity registry with a valid KYC claim. */
+const isVerified = (wallet: Address) => chain.isVerified(wallet)
 
 // ---------------------------------------------------------------------------
 // Built-in wallets: one real EOA per browser, its key in the custody file. The browser holds a
@@ -530,6 +525,8 @@ function revertMessage(e: unknown): string {
     case 'NotVerified':
     case 'UnverifiedHolder':
       return 'This wallet is not verified to lend yet. Verify your identity, then try again.'
+    case 'EnforcedPause':
+      return 'Transfers of this loan note are paused while the loan is overdue.'
     case 'FundingIsPaused':
       return 'New funding is paused while the books are reconciled. Try again later.'
     case 'OverTarget':
@@ -549,6 +546,11 @@ function revertMessage(e: unknown): string {
     case 'DripCooldown':
       return `USDC can be requested once an hour. Try again after ${new Date(Number(args[0]) * 1000).toISOString().slice(11, 16)} UTC.`
   }
+  // ERC-3643 tokens and registries revert with a reason string rather than a custom error.
+  const reason = reverted instanceof ContractFunctionRevertedError ? (reverted.reason ?? '') : ''
+  if (/not verified|identity/i.test(reason)) return 'This wallet is not verified to lend yet. Verify your identity, then try again.'
+  if (/paused/i.test(reason)) return 'Transfers of this loan note are paused while the loan is overdue.'
+  if (/transfer not possible/i.test(reason)) return 'Loan notes can only move to a wallet with a verified identity.'
   return `The transaction would fail${data?.errorName ? ` (${data.errorName})` : ''}. Refresh and try again.`
 }
 
@@ -791,7 +793,7 @@ const server = Bun.serve({
 
     // ---------------- app: config, state, runs ----------------
     '/api/config': {
-      GET: () =>
+      GET: async () =>
         json({
           deployment,
           deploymentName: DEPLOYMENT,
@@ -799,6 +801,9 @@ const server = Bun.serve({
           explorer: process.env.EXPLORER ?? null,
           chainId: deployment.chainId,
           builtinWallets: BUILTIN_WALLETS,
+          // ERC-3643: the identity registry every loan token checks, and the claim issuer CRE writes KYC claims through.
+          identityRegistry: deployment.identityRegistry ?? (await chain.identityRegistry().catch(() => null)),
+          claimIssuer: deployment.claimIssuer ?? (await chain.claimIssuer().catch(() => null)),
         }),
     },
     '/api/state': {
@@ -808,8 +813,8 @@ const server = Bun.serve({
         const loans = await Promise.all(
           Array.from({ length: count }, async (_, i) => {
             const id = BigInt(i + 1)
-            const l = await chain.readLoan(id)
-            return { id: i + 1, ...l }
+            const [l, loanToken] = await Promise.all([chain.readLoan(id), chain.loanToken(i + 1).catch(() => undefined)])
+            return { id: i + 1, ...l, loanToken: loanToken ?? null } // loanToken: the loan's ERC-3643 token (its notes)
           }),
         )
         const fundingEvents = await chain.publicClient.getContractEvents({
@@ -1212,6 +1217,15 @@ const server = Bun.serve({
         const lender = state.lenders.find((l) => l.id === b.lenderId) ?? fail(404, 'We could not find your lender account. Verify your identity to lend, then try again.')
         if (lender.funding !== 'fiat') fail(400, 'This account lends with USDC. Use the USDC tab to fund.')
         if (lender.kycStatus !== 'approved') fail(403, 'Your identity was not verified, so you cannot fund this loan.')
+        // Loan notes mint only to wallets in the ERC-3643 identity registry, so the KYC report must have landed first.
+        if (!(await isVerified(lender.wallet))) {
+          fail(
+            409,
+            inFlight(WF.kyc.handler, JSON.stringify({ lenderId: lender.id }))
+              ? 'Your identity check is still running. Fund once it is done.'
+              : 'Your identity is not verified yet. Verify your identity, then fund.',
+          )
+        }
         const currency = b.currency === 'EUR' || b.currency === 'USD' ? b.currency : fail(400, 'Choose the currency of your transfer: EUR or USD.')
         const amountMinor = Number(b.amountMinor)
         if (!Number.isInteger(amountMinor) || amountMinor < 100) fail(400, 'Enter an amount of at least 1.00.')

@@ -337,7 +337,7 @@ const contractsOf = (live: Live) => {
   return d?.market && d?.stablecoin ? { market: d.market, stablecoin: d.stablecoin } : null
 }
 
-/** Balance, allowance, verification and notes for any address, refreshed as the market moves. */
+/** Balance, allowance, verification and loan notes (per-loan ERC-3643 token balances) for any address, refreshed as the market moves. */
 function useAccount(address: string | undefined, live: Live) {
   const [info, setInfo] = useState<Any>(null)
   const [error, setError] = useState('')
@@ -478,6 +478,24 @@ function Tx({ h, live }: { h?: string; live: Live }) {
     <span className="hash">{short(h)}</span>
   )
 }
+
+/** A contract address, linked to the block explorer when there is one. */
+function Addr({ a, live, children }: { a?: string; live: Live; children?: React.ReactNode }) {
+  if (!a) return null
+  const base = live.config?.explorer
+  const label = children ?? <span className="code">{short(a)}</span>
+  return base ? (
+    <a className="hash" href={`${base}/address/${a}`} target="_blank" rel="noreferrer">
+      {label}
+    </a>
+  ) : (
+    <span className={children ? undefined : 'hash'}>{label}</span>
+  )
+}
+
+/** Each loan's notes are its own ERC-3643 token, named by the market when the loan is listed. */
+const noteSymbol = (loanId: number | string) => `TFN${loanId}`
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
 function Status({ s }: { s: number }) {
   const st = STATUS[s]
@@ -885,7 +903,7 @@ function runSummary(run: Any, live: Live): string | null {
         ? d.redeemed.map((r: Any) => `${lenderById(live, r.lender)?.name ?? lenderFor(live, r.lender)?.name ?? r.lender} paid ${usd(r.payout, 2)}`).join(', ')
         : 'No bank-transfer lenders on this loan'
     case 'watch-and-reconcile': {
-      const changes = (d.statusChanges ?? []).map((c: Any) => `loan ${c.loanId} ${c.status}`).join(', ')
+      const changes = (d.statusChanges ?? []).map((c: Any) => `loan ${c.loanId} ${c.status}${c.tokenPaused ? ` (${noteSymbol(c.loanId)} paused)` : ''}`).join(', ')
       return `${d.reconciliation?.ok ? 'Reserves match' : 'Reserve mismatch, funding paused'}${changes ? `; ${changes}, business frozen` : ''}`
     }
   }
@@ -1203,7 +1221,10 @@ function KycProgress({ lender, live, notify, declinedHint }: { lender: Any; live
   if (declined)
     return (
       <div className="say bad small" role="alert">
-        We could not verify this identity, so this account cannot lend. {declinedHint}
+        {kycRun?.resultData?.status === 'unsupported country'
+          ? 'We cannot accept lenders resident in this country yet, so this account cannot lend.'
+          : 'We could not verify this identity, so this account cannot lend.'}{' '}
+        {declinedHint}
       </div>
     )
   return (
@@ -1363,7 +1384,9 @@ function Transfer({ loan, live, notify, lender }: { loan: Any; live: Live; notif
         <li className={received ? 'done' : busy === 'deposit' ? 'now' : ''}>Transfer received</li>
         <li className={received ? 'done' : ''}>Converted to USDC{intent.fxRateE8 ? ` at ${rate(intent.fxRateE8)}` : ''}</li>
         <li className={credited ? 'done' : failed ? 'fail' : verifying ? 'now' : ''}>Deposit verified</li>
-        <li className={credited ? 'done' : ''}>{credited ? `${usd(intent.stablecoinAmount, 2)} in loan notes issued` : 'Loan notes issued'}</li>
+        <li className={credited ? 'done' : ''}>
+          {credited ? `${usd(intent.stablecoinAmount, 2)} in loan notes issued (${noteSymbol(loan.id)})` : 'Loan notes issued'}
+        </li>
       </ul>
       {failed ? (
         <div className="say bad small" role="alert">
@@ -1728,6 +1751,21 @@ function LoanPage({ id, live, go, notify, session }: { id: number; live: Live; g
                   <td>Fingerprint</td>
                   <td className="code">{short(loan.docHash)}</td>
                 </tr>
+                {loan.loanToken && loan.loanToken !== ZERO_ADDRESS ? (
+                  <tr>
+                    <td>Loan notes</td>
+                    <td>
+                      <Addr a={loan.loanToken} live={live}>
+                        ERC-3643 token {noteSymbol(loan.id)}
+                      </Addr>{' '}
+                      {live.config?.explorer ? null : <span className="code small muted">{short(loan.loanToken)}</span>}
+                      <div className="small muted">
+                        One token for this loan, held only by lenders with a verified identity.
+                        {loan.status >= 5 ? ' Transfers are paused until the loan is repaid.' : ''}
+                      </div>
+                    </td>
+                  </tr>
+                ) : null}
               </tbody>
             </table>
           </section>
@@ -1818,7 +1856,8 @@ function LoanPage({ id, live, go, notify, session }: { id: number; live: Live; g
               </div>
               {BigInt(account.info?.notes?.[String(loan.id)] ?? 0) > 0n ? (
                 <div className="say good small">
-                  Wallet <span className="code">{short(session.wallet?.address)}</span> holds {usd(account.info.notes[String(loan.id)], 2)} of this loan.
+                  Wallet <span className="code">{short(session.wallet?.address)}</span> holds {usd(account.info.notes[String(loan.id)], 2)} of this loan in{' '}
+                  {noteSymbol(loan.id)} notes.
                 </div>
               ) : null}
             </section>

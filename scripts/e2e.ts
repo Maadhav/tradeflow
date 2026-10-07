@@ -3,10 +3,13 @@
 // the buyer portal, lenders sign up (KYC, with proof of wallet ownership) and fund by bank transfer or
 // with a built-in wallet of their own.
 // Every step runs the real CRE workflows (simulate --broadcast) and asserts the run result or the
-// onchain state.
+// onchain state, including the ERC-3643 side: each listed loan gets its own T-REX token (TFN<id>),
+// KYC registers the wallet in the identity registry, funding mints notes, a late loan's token is
+// paused, and claims and fiat redemptions burn the notes.
 // Usage: bun scripts/e2e.ts [baseUrl]   (default http://localhost:8787, fresh stack from dev-up.sh)
 
 import { generatePrivateKey, privateKeyToAccount } from '../services/rails/node_modules/viem/_esm/accounts/index.js'
+import { decodeFunctionResult, encodeFunctionData, parseAbi } from '../services/rails/node_modules/viem/_esm/index.js'
 
 const BASE = process.argv[2] ?? 'http://localhost:8787'
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -70,14 +73,44 @@ async function waitLoan(docHash: string, status: number, timeoutMs = 300_000) {
   throw new Error(`loan never reached status ${status}`)
 }
 
-async function ethCall(to: string, data: string): Promise<string> {
+async function rpc(method: string, params: unknown[]): Promise<{ result?: any; error?: { message: string } }> {
   const res = await fetch(config.rpcUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to, data }, 'latest'] }),
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
   })
-  return ((await res.json()) as any).result
+  return (await res.json()) as any
 }
+async function ethCall(to: string, data: string, from?: string): Promise<string> {
+  const { result, error } = await rpc('eth_call', [{ to, data, ...(from ? { from } : {}) }, 'latest'])
+  if (error) throw new Error(`eth_call to ${to} reverted: ${error.message}`)
+  return result
+}
+
+// ---- ERC-3643: per-loan T-REX tokens and the shared identity registry ----
+const ZERO = '0x0000000000000000000000000000000000000000'
+const sameAddr = (a?: string, b?: string) => !!a && !!b && a.toLowerCase() === b.toLowerCase()
+const erc3643 = parseAbi([
+  'function loanToken(uint256 loanId) view returns (address)',
+  'function identityRegistry() view returns (address)',
+  'function isVerified(address) view returns (bool)',
+  'function name() view returns (string)',
+  'function symbol() view returns (string)',
+  'function decimals() view returns (uint8)',
+  'function balanceOf(address) view returns (uint256)',
+  'function totalSupply() view returns (uint256)',
+  'function paused() view returns (bool)',
+  'function transfer(address to, uint256 amount) returns (bool)',
+])
+async function read<T>(to: string, functionName: string, args: unknown[] = []): Promise<T> {
+  const data = await ethCall(to, encodeFunctionData({ abi: erc3643, functionName, args } as any))
+  if (!data || data === '0x') throw new Error(`${functionName} returned no data from ${to}`)
+  return decodeFunctionResult({ abi: erc3643, functionName, data } as any) as T
+}
+const hasCode = async (a: string) => ((await rpc('eth_getCode', [a, 'latest'])).result ?? '0x') !== '0x'
+const notesOf = (token: string, holder: string) => read<bigint>(token, 'balanceOf', [holder])
+const supplyOf = (token: string) => read<bigint>(token, 'totalSupply')
+const verifiedInRegistry = (wallet: string) => read<boolean>(ctx.registry, 'isVerified', [wallet])
 
 // ---- calldata (ABI-encoded by hand: selectors of the allowlisted calls plus one that is not) ----
 const word = (v: bigint | number | string) => BigInt(v).toString(16).padStart(64, '0')
@@ -133,6 +166,16 @@ async function step(name: string, fn: () => Promise<string | void>) {
 console.log(`Tradeflow end-to-end against ${BASE}`)
 const ctx: Record<string, any> = {}
 try {
+  await step('ERC-3643 contracts: identity registry and claim issuer are deployed and exposed', async () => {
+    const registry = await read<string>(market, 'identityRegistry')
+    expect(registry && registry !== ZERO && (await hasCode(registry)), 'the market has no ERC-3643 identity registry')
+    expect(sameAddr(config.identityRegistry, registry), `/api/config identityRegistry ${config.identityRegistry} differs from the market's ${registry}`)
+    expect(config.claimIssuer && (await hasCode(config.claimIssuer)), `/api/config claimIssuer ${config.claimIssuer} has no code`)
+    expect(!('notes' in config.deployment), 'the deployment still names a LoanNotes contract')
+    ctx.registry = registry
+    return `registry ${registry.slice(0, 10)}, claim issuer ${config.claimIssuer.slice(0, 10)}`
+  })
+
   await step('Sierra Verde signs up, buyer confirms INV-2026-0142, listed', async () => {
     const { business, key } = await call('/api/businesses', {
       name: 'Sierra Verde Coffee Exporters',
@@ -196,12 +239,28 @@ try {
     expect(r.logs.some((l: string) => l.includes('registry: document found, buyer confirmed')), 'listing run has no registry step log')
     const loan = await waitLoan(ctx.inv.docHash, 1)
     ctx.loan = loan
+
+    // Listing deployed the loan's own ERC-3643 token.
+    const token = loan.loanToken
+    expect(token && token !== ZERO && (await hasCode(token)), `listing deployed no loan token (loanToken ${token})`)
+    expect(sameAddr(await read<string>(market, 'loanToken', [BigInt(loan.id)]), token), '/api/state loanToken differs from market.loanToken')
+    expect(sameAddr(r.resultData.token, token) && Number(r.resultData.loanId) === loan.id, `listing run reported token ${r.resultData.token} for loan ${r.resultData.loanId}`)
+    const [name, symbol, decimals, supply] = await Promise.all([
+      read<string>(token, 'name'),
+      read<string>(token, 'symbol'),
+      read<number>(token, 'decimals'),
+      supplyOf(token),
+    ])
+    expect(name === `Tradeflow Loan Note ${loan.id}` && symbol === `TFN${loan.id}`, `token named "${name}" (${symbol})`)
+    expect(Number(decimals) === 6 && supply === 0n, `token decimals ${decimals}, supply ${supply} before funding`)
+    expect(r.logs.some((l: string) => l.includes(`ERC-3643 token TFN${loan.id}`)), 'listing run has no token step log')
+    ctx.token = token
     const own = await call(`/api/businesses/${business.id}`, undefined, biz(key))
     const doc = own.documents.find((d: any) => d.number === 'INV-2026-0142')
     expect(doc?.review?.status === 'listed' && doc.buyerLink === reg.buyerLink, `business view: review ${JSON.stringify(doc?.review)}`)
     const retry = await request('/api/documents/review', { businessId: business.id, number: 'INV-2026-0142' }, biz(key))
     expect(retry.status === 409, `starting the review of a listed document again: expected 409, got ${retry.status}`)
-    return `loan ${loan.id}, grade A, target $${Number(loan.target) / 1e6}`
+    return `loan ${loan.id}, grade A, target $${Number(loan.target) / 1e6}, token ${symbol}`
   })
 
   await step('buyer disputes INV-2026-0999, listing rejected', async () => {
@@ -282,6 +341,9 @@ try {
     ctx.ana = lender
     const kyc = await waitRunId(runId)
     expect(kyc.resultData?.verified, 'KYC not verified')
+    expect(kyc.resultData.country === 724, `KYC registered country ${kyc.resultData.country}, expected 724 (ES)`)
+    expect(kyc.logs.some((l: string) => l.includes('wallet registered in the ERC-3643 identity registry')), 'KYC run has no registry step log')
+    expect(await verifiedInRegistry(lender.wallet), 'KYC did not verify the wallet in the ERC-3643 identity registry')
     const w = await call(`/api/wallet/${lender.wallet}`)
     expect(w.verified === true, 'lender wallet not verified onchain')
 
@@ -296,7 +358,29 @@ try {
     expect(deposits.length === 1, `bank booked ${deposits.length} credits for one transfer`)
     const loan = await loanByDoc(ctx.inv.docHash)
     expect(BigInt(loan.fiatFunded) === BigInt(res.intent.stablecoinAmount), 'credited amount not onchain')
-    return `$${(Number(res.intent.stablecoinAmount) / 1e6).toFixed(2)}`
+    const notes = await notesOf(ctx.token, lender.wallet)
+    expect(notes === BigInt(res.intent.stablecoinAmount), `Ana holds ${notes} TFN${loan.id}, credited ${res.intent.stablecoinAmount}`)
+    expect(BigInt((await call(`/api/wallet/${lender.wallet}`)).notes[String(loan.id)] ?? 0) === notes, '/api/wallet notes differ from the token balance')
+    return `$${(Number(res.intent.stablecoinAmount) / 1e6).toFixed(2)}, ${(Number(notes) / 1e6).toFixed(2)} TFN${loan.id}`
+  })
+
+  await step('a KYC country with no ISO 3166 numeric code is refused, never registered as 0', async () => {
+    const { lender, runId } = await call('/api/lenders', {
+      name: 'Xavier Nowhere',
+      email: 'xavier@nowhere.example',
+      country: 'XX',
+      funding: 'fiat',
+      bankAccount: 'XX00 0000 0000 0000',
+    })
+    const kyc = await waitRunId(runId)
+    expect(kyc.resultData?.verified === false && kyc.resultData.status === 'unsupported country', `unexpected KYC result ${JSON.stringify(kyc.resultData)}`)
+    expect(/ISO 3166 numeric/.test(kyc.resultData.reason ?? ''), `no clear reason: ${kyc.resultData.reason}`)
+    expect(!kyc.resultData.tx, 'a report was written for an unsupported country')
+    expect(!(await verifiedInRegistry(lender.wallet)), 'an unsupported country was registered')
+    // The provider approved this lender, but no KYC report landed: funding is refused before any deposit.
+    const early = await request('/api/onramp/intent', { lenderId: lender.id, loanId: ctx.loan.id, amountMinor: 10_000, currency: 'EUR' })
+    expect(early.status === 409 && !early.data.intent, `funding by a wallet not in the identity registry: expected 409, got ${early.status}`)
+    return kyc.resultData.reason
   })
 
   await step('USDC lenders must prove the wallet is theirs', async () => {
@@ -336,6 +420,7 @@ try {
   })
 
   await step('Ben Carter (USDC, his own built-in wallet) verified, funds the rest, payout runs', async () => {
+    expect(!(await verifiedInRegistry(wallet.address)), 'a new wallet is already verified in the identity registry')
     const { status, data } = await request('/api/lenders', {
       name: 'Ben Carter',
       email: 'ben.carter@example.com',
@@ -345,7 +430,9 @@ try {
     }, walletHeaders())
     expect(status === 201, `${status} ${data.error}`)
     ctx.ben = data.lender
-    expect((await waitRunId(data.runId)).resultData?.verified, 'KYC not verified')
+    const kyc = await waitRunId(data.runId)
+    expect(kyc.resultData?.verified && kyc.resultData.country === 840, `KYC not verified as US (840): ${JSON.stringify(kyc.resultData)}`)
+    expect(await verifiedInRegistry(wallet.address), 'KYC did not verify the wallet in the ERC-3643 identity registry')
     expect((await call(`/api/wallet/${wallet.address}`)).verified === true, 'wallet not verified onchain')
 
     const loan = await loanByDoc(ctx.inv.docHash)
@@ -360,7 +447,11 @@ try {
     await send(market, calldata.fund(loan.id, remaining))
     const r = await waitRun(after, 'disburse-on-funded')
     await waitLoan(ctx.inv.docHash, 3)
-    return `$${Number(remaining) / 1e6} funded, payout ${r.resultData?.payoutRef}`
+    const notes = await notesOf(ctx.token, wallet.address)
+    expect(notes === remaining, `Ben holds ${notes} TFN${loan.id}, funded ${remaining}`)
+    const supply = await supplyOf(ctx.token)
+    expect(supply === BigInt(loan.target), `TFN${loan.id} supply ${supply}, loan target ${loan.target}`)
+    return `$${Number(remaining) / 1e6} funded, TFN${loan.id} supply ${(Number(supply) / 1e6).toFixed(2)}, payout ${r.resultData?.payoutRef}`
   })
 
   await step('buyer pays the full invoice: lenders repaid, balance to the business, Ana repaid to her bank, Ben claims', async () => {
@@ -381,14 +472,19 @@ try {
     expect(balance && BigInt(balance.amount) === BigInt(d.balance) && balance.kind === 'business', 'balance not paid to the business')
     const red = await waitRun(after, 'redeem-fiat-lenders')
     expect(red.resultData?.redeemed?.some((x: any) => x.lender === ctx.ana.id), 'Ana was not repaid')
+    expect((await notesOf(ctx.token, ctx.ana.wallet)) === 0n, "Ana's TFN notes were not burned when she was repaid to her bank")
+    expect(!(await read<boolean>(ctx.token, 'paused')), 'the token of a repaid loan is paused')
     const portal = await call(`/api/buyer/${ctx.invToken}`)
     expect(portal.loan.status === 4 && Number(portal.loan.repaidAt) > 0 && portal.payment?.amountMinor === 925_000, 'buyer portal does not show the invoice paid')
 
     const w = await call(`/api/wallet/${wallet.address}`)
     expect(BigInt(w.notes[String(ctx.loan.id)] ?? 0) > 0n, 'Ben holds no notes to claim')
+    expect(BigInt(w.notes[String(ctx.loan.id)]) === (await notesOf(ctx.token, wallet.address)), '/api/wallet notes differ from the token balance')
     await send(market, calldata.claim(ctx.loan.id))
     const w2 = await call(`/api/wallet/${wallet.address}`)
     expect(!w2.notes[String(ctx.loan.id)] && BigInt(w2.usdc) > BigInt(w.usdc), 'claim did not pay out')
+    expect((await notesOf(ctx.token, wallet.address)) === 0n, 'claim did not burn the TFN notes')
+    expect((await supplyOf(ctx.token)) === 0n, 'TFN notes still outstanding after every lender was repaid')
     return `paid EUR ${paid.amountMinor / 100}, $${(Number(owed) / 1e6).toFixed(2)} to lenders, $${(Number(d.balance) / 1e6).toFixed(2)} balance, Ben claimed $${(Number(BigInt(w2.usdc) - BigInt(w.usdc)) / 1e6).toFixed(2)}`
   })
 
@@ -443,6 +539,11 @@ try {
     await send(market, calldata.fund(loan.id, amount))
     await waitRun(after, 'disburse-on-funded')
     const disbursed = await waitLoan(reg.document.docHash, 3)
+    const token = disbursed.loanToken
+    expect(token && token !== ZERO && !sameAddr(token, ctx.token), 'the second loan did not get its own token')
+    expect((await read<string>(token, 'symbol')) === `TFN${loan.id}`, 'second loan token has the wrong symbol')
+    expect((await notesOf(token, wallet.address)) === amount, `Ben does not hold ${amount} TFN${loan.id}`)
+    expect(!(await read<boolean>(token, 'paused')), 'the token of a performing loan is paused')
 
     // Demo clock: one loan day is 60 seconds. Wait past maturity, then run the monitor.
     const waitMs = Number(disbursed.maturity) * 1000 - Date.now() + 5_000
@@ -454,12 +555,20 @@ try {
       if (!late) await sleep(10_000)
     }
     expect(late?.businessFrozen, 'monitor did not mark the loan late')
+    expect(late.tokenPaused === true, 'monitor did not see the loan token paused')
     await waitLoan(reg.document.docHash, 5)
     const frozen = await ethCall(market, calldata.frozenBorrower(business.wallet))
     expect(BigInt(frozen) === 1n, 'business not frozen onchain')
+    // Late pauses the loan's ERC-3643 token: notes stop moving, even between verified wallets.
+    expect(await read<boolean>(token, 'paused'), `TFN${loan.id} not paused after the loan went late`)
+    const moved = await rpc('eth_call', [
+      { from: wallet.address, to: token, data: encodeFunctionData({ abi: erc3643, functionName: 'transfer', args: [ctx.ana.wallet, 1n] }) },
+      'latest',
+    ])
+    expect(moved.error, `a transfer of TFN${loan.id} succeeded while the loan is late`)
     const portal = await call(`/api/buyer/${ctx.rapidToken}`)
     expect(portal.loan.status === 5 && portal.collection?.account?.startsWith('US-ACH'), 'buyer portal does not show the invoice overdue')
-    return `loan ${loan.id} late, ${business.name} frozen`
+    return `loan ${loan.id} late, ${business.name} frozen, TFN${loan.id} paused`
   })
 
   await step('built-in wallets sign only for their own browser, and only allowlisted calls', async () => {
@@ -490,6 +599,7 @@ try {
       'ap@gulfauto.ae',
       'ana.ruiz@example.es',
       'ben.carter@example.com',
+      'xavier@nowhere.example',
       'ES91 2100',
       'CO-BANC-4471',
       'AE-ENBD-3307',
@@ -514,7 +624,8 @@ try {
     // Buyer links appear only in the business's own, signed-in view.
     const own = JSON.stringify(await call(`/api/businesses/${ctx.sierra.id}`, undefined, biz(ctx.sierraKey)))
     expect(own.includes(ctx.invToken), "the business's own view lacks its buyer link")
-    expect(s.documents.length >= 4 && s.businesses.length === 2 && s.lenders.length === 3, 'state is missing records')
+    expect(s.documents.length >= 4 && s.businesses.length === 2 && s.lenders.length === 4, 'state is missing records')
+    expect(s.loans.every((l: any) => l.loanToken && l.loanToken !== ZERO), '/api/state has a loan without its ERC-3643 token')
   })
 } catch {
   // reported by step()

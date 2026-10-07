@@ -26750,7 +26750,6 @@ var baseConfig = object({
   chainSelectorName: string2(),
   market: string2(),
   stablecoin: string2(),
-  notes: string2(),
   eurUsdFeed: string2(),
   railsUrl: string2(),
   gasLimit: string2()
@@ -26773,10 +26772,17 @@ var marketAbi = parseAbi([
   "function secondsPerDay() view returns (uint32)",
   "function usedRef(bytes32 ref) view returns (bool)",
   "function loanStates(uint256 fromId, uint256 toId) view returns (uint8[] statuses, uint64[] maturities, uint256[] funded, uint256[] fiatFunded)",
-  "function getLoan(uint256 loanId) view returns ((address borrower, uint8 assetType, uint8 riskGrade, bytes3 currency, uint8 status, uint32 aprBps, uint32 tenorDays, uint64 listedAt, uint64 fundedAt, uint64 disbursedAt, uint64 maturity, uint64 repaidAt, uint256 faceValueMinor, uint256 fxRateE8, uint256 target, uint256 funded, uint256 fiatFunded, uint256 repaidAmount, bytes32 docHash, string ref))"
+  "function getLoan(uint256 loanId) view returns ((address borrower, uint8 assetType, uint8 riskGrade, bytes3 currency, uint8 status, uint32 aprBps, uint32 tenorDays, uint64 listedAt, uint64 fundedAt, uint64 disbursedAt, uint64 maturity, uint64 repaidAt, uint256 faceValueMinor, uint256 fxRateE8, uint256 target, uint256 funded, uint256 fiatFunded, uint256 repaidAmount, bytes32 docHash, string ref))",
+  "function loanToken(uint256 loanId) view returns (address)",
+  "function identityRegistry() view returns (address)"
 ]);
 var erc20Abi2 = parseAbi(["function balanceOf(address) view returns (uint256)"]);
-var notesAbi = parseAbi(["function balanceOf(address account, uint256 id) view returns (uint256)"]);
+var loanTokenAbi = parseAbi([
+  "function balanceOf(address) view returns (uint256)",
+  "function totalSupply() view returns (uint256)",
+  "function paused() view returns (bool)"
+]);
+var identityRegistryAbi = parseAbi(["function isVerified(address) view returns (bool)"]);
 var feedAbi = parseAbi([
   "function latestRoundData() view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)"
 ]);
@@ -26828,6 +26834,13 @@ function writeAction(runtime, action, payload) {
   runtime.log(`report delivered: action=${action} tx=${hash}`);
   return hash;
 }
+function loanTokenOf(runtime, loanId) {
+  const token = read2(runtime, runtime.config.market, marketAbi, "loanToken", [loanId]);
+  if (token === zeroAddress)
+    throw new Error(`loan ${loanId} has no ERC-3643 token`);
+  return token;
+}
+var tokenSymbol = (loanId) => `TFN${loanId}`;
 var refHash = (ref) => keccak256(toHex(ref));
 function decodeInput(input) {
   return JSON.parse(new TextDecoder().decode(input));
@@ -26968,9 +26981,12 @@ var onRepaid = (runtime, log) => {
   const list = new ClientCapability2().sendRequest(runtime, fetchLenders, ConsensusAggregationByFields({ list: identical }))(apiKey).result().list;
   const fiatLenders = list ? list.split(",").map((x) => ({ lenderId: x.split(":")[0], wallet: x.split(":")[1] })) : [];
   runtime.log(`loan ${loanId} repaid: ${fiatLenders.length} bank-transfer lender${fiatLenders.length === 1 ? "" : "s"} to pay back`);
+  const token = fiatLenders.length ? loanTokenOf(runtime, loanId) : undefined;
+  if (token)
+    runtime.log(`reading loan note holdings from ERC-3643 token ${tokenSymbol(loanId)}`);
   const redeemed = [];
   for (const l of fiatLenders) {
-    const balance = read2(runtime, runtime.config.notes, notesAbi, "balanceOf", [l.wallet, loanId]);
+    const balance = read2(runtime, token, loanTokenAbi, "balanceOf", [l.wallet]);
     if (balance === 0n)
       continue;
     const payout = balance * loan.repaidAmount / loan.target;
@@ -26982,7 +26998,7 @@ var onRepaid = (runtime, log) => {
       idempotencyKey: `redeem-${loanId}-${l.lenderId}`
     });
     const tx = writeAction(runtime, Action.FiatRedeemed, encodeAbiParameters(parseAbiParameters("uint256 loanId, address lender, bytes32 payoutRef"), [loanId, l.wallet, refHash(`payout|${payoutRef}`)]));
-    runtime.log(`fiat payout ${payoutRef} sent to a bank-transfer lender`);
+    runtime.log(`fiat payout ${payoutRef} sent to a bank-transfer lender, ${tokenSymbol(loanId)} notes burned`);
     redeemed.push({ lender: l.lenderId, payout, payoutRef, tx });
   }
   return bigintJson({ loanId, redeemed });

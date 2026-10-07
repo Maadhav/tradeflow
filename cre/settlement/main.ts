@@ -10,8 +10,9 @@
 // USD with Chainlink's EUR/USD feed; check it covers the lenders' share (advance plus interest)
 // and that share is on-ramped into the market; pay the balance to the business in fiat
 // (idempotent per loan); report Repaid with the lenders' share.
-// Handler 2 (EVM log: Repaid): pay each fiat lender's bank account and report FiatRedeemed,
-// which burns their notes and moves their share to the off-ramp operator.
+// Handler 2 (EVM log: Repaid): read each fiat lender's notes from the loan's ERC-3643 token, pay
+// their bank account and report FiatRedeemed, which burns the notes and moves their share to the
+// off-ramp operator.
 
 import {
   ConsensusAggregationByFields,
@@ -35,7 +36,21 @@ import {
 } from '@chainlink/cre-sdk'
 import { decodeEventLog, encodeAbiParameters, keccak256, parseAbi, parseAbiParameters, toHex, type Address, type Hex } from 'viem'
 import { z } from 'zod'
-import { Action, baseConfig, bigintJson, decodeInput, marketAbi, notesAbi, read, readEurUsd, refHash, toUsd6, writeAction } from './lib'
+import {
+  Action,
+  baseConfig,
+  bigintJson,
+  decodeInput,
+  loanTokenAbi,
+  loanTokenOf,
+  marketAbi,
+  read,
+  readEurUsd,
+  refHash,
+  toUsd6,
+  tokenSymbol,
+  writeAction,
+} from './lib'
 
 const configSchema = baseConfig.extend({
   authorizedKeys: z.array(z.string()),
@@ -208,9 +223,12 @@ const onRepaid = (runtime: Runtime<Config>, log: EVMLog): string => {
   const fiatLenders = list ? list.split(',').map((x) => ({ lenderId: x.split(':')[0], wallet: x.split(':')[1] as Address })) : []
   runtime.log(`loan ${loanId} repaid: ${fiatLenders.length} bank-transfer lender${fiatLenders.length === 1 ? '' : 's'} to pay back`)
 
+  // Each lender's notes are their balance of the loan's ERC-3643 token.
+  const token = fiatLenders.length ? loanTokenOf(runtime, loanId) : undefined
+  if (token) runtime.log(`reading loan note holdings from ERC-3643 token ${tokenSymbol(loanId)}`)
   const redeemed: unknown[] = []
   for (const l of fiatLenders) {
-    const balance = read<bigint>(runtime, runtime.config.notes, notesAbi, 'balanceOf', [l.wallet, loanId])
+    const balance = read<bigint>(runtime, token!, loanTokenAbi, 'balanceOf', [l.wallet])
     if (balance === 0n) continue
     const payout = (balance * loan.repaidAmount) / loan.target
     const payoutRef = postPayout(runtime, {
@@ -225,7 +243,7 @@ const onRepaid = (runtime: Runtime<Config>, log: EVMLog): string => {
       Action.FiatRedeemed,
       encodeAbiParameters(parseAbiParameters('uint256 loanId, address lender, bytes32 payoutRef'), [loanId, l.wallet, refHash(`payout|${payoutRef}`)]),
     )
-    runtime.log(`fiat payout ${payoutRef} sent to a bank-transfer lender`)
+    runtime.log(`fiat payout ${payoutRef} sent to a bank-transfer lender, ${tokenSymbol(loanId)} notes burned`)
     redeemed.push({ lender: l.lenderId, payout, payoutRef, tx })
   }
   return bigintJson({ loanId, redeemed })

@@ -7,9 +7,17 @@ via_ir = true
 optimizer = true
 optimizer_runs = 200
 fs_permissions = [{ access = "read-write", path = "./deployments" }]
+# T-REX (ERC-3643) and ONCHAINID are built against OpenZeppelin 4.9.3, our own code against 5.1.0.
+# Context remappings give each vendored library the OpenZeppelin version it was written for; only
+# T-REX uses the upgradeable package (see lib/README.md).
 remappings = [
-    "@openzeppelin/=lib/openzeppelin-contracts/",
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+    "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable-4.9.3/contracts/",
     "forge-std/=lib/forge-std/src/",
+    "@tokenysolutions/t-rex/=lib/T-REX/",
+    "@onchain-id/solidity/=lib/onchain-id/",
+    "lib/T-REX/:@openzeppelin/contracts/=lib/openzeppelin-contracts-4.9.3/contracts/",
+    "lib/onchain-id/:@openzeppelin/contracts/=lib/openzeppelin-contracts-4.9.3/contracts/",
 ]
 
 [rpc_endpoints]

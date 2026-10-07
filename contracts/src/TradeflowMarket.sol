@@ -4,21 +4,35 @@ pragma solidity 0.8.26;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
+import {IToken} from "@tokenysolutions/t-rex/contracts/token/IToken.sol";
+import {IIdentityRegistry} from "@tokenysolutions/t-rex/contracts/registry/interface/IIdentityRegistry.sol";
+import {AgentRoleUpgradeable} from "@tokenysolutions/t-rex/contracts/roles/AgentRoleUpgradeable.sol";
+import {TokenProxy} from "@tokenysolutions/t-rex/contracts/proxy/TokenProxy.sol";
+import {ModularComplianceProxy} from "@tokenysolutions/t-rex/contracts/proxy/ModularComplianceProxy.sol";
+import {IIdentity} from "@onchain-id/solidity/contracts/interface/IIdentity.sol";
+import {IdentityProxy} from "@onchain-id/solidity/contracts/proxy/IdentityProxy.sol";
 import {ReceiverTemplate} from "./cre/ReceiverTemplate.sol";
-import {LoanNotes} from "./LoanNotes.sol";
+import {CreClaimIssuer} from "./CreClaimIssuer.sol";
 
 /// @title TradeflowMarket
 /// @notice Credit marketplace for real-world business financing (invoices, bills of lading,
 ///         equipment). Every state change that depends on off-chain truth arrives as a signed
 ///         Chainlink CRE report through the forwarder:
 ///           - listing after document verification and confidential credit grading
-///           - lender KYC (allowlist for the notes)
+///           - lender KYC (ONCHAINID identity, KYC claim and registration in the ERC-3643
+///             identity registry)
 ///           - fiat funding after the deposit is verified and on-ramped
 ///           - disbursement after the fiat payout to the business is confirmed
 ///           - repayment after two independent sources confirm the buyer paid
 ///           - fiat redemption for lenders who funded by bank transfer
 ///           - late/default status and the three-way reconciliation circuit breaker
 ///         Lenders who hold stablecoins fund and claim directly onchain.
+///
+///         Each loan's notes are its own ERC-3643 (T-REX) security token, deployed as small
+///         proxies when the loan is listed. The token only mints to and transfers between wallets
+///         that the shared identity registry verifies, and that verification is a KYC claim which
+///         only a CRE report can issue or revoke (see CreClaimIssuer).
 contract TradeflowMarket is ReceiverTemplate, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -76,8 +90,15 @@ contract TradeflowMarket is ReceiverTemplate, ReentrancyGuard {
         bytes32 snapshotHash;
     }
 
+    uint256 public constant KYC_TOPIC = 1; // ERC-3643 claim topic required by the identity registry
+    uint256 private constant CLAIM_SCHEME_CONTRACT = 3; // ERC-735 scheme: validity checked by calling the issuer
+    uint8 private constant NOTE_DECIMALS = 6; // notes are denominated in stablecoin units
+
     IERC20 public immutable stablecoin;
-    LoanNotes public immutable notes;
+    IIdentityRegistry public immutable identityRegistry; // shared T-REX identity registry, market is an agent
+    CreClaimIssuer public immutable claimIssuer; // trusted issuer for KYC_TOPIC
+    address public immutable trexAuthority; // T-REX implementation authority (token, compliance logic)
+    address public immutable identityAuthority; // ONCHAINID implementation authority (identity logic)
 
     address public settlementAccount; // off-ramp operator that pays fiat out
     uint8 public maxRiskGrade = 4; // owner policy: grades worse than this are never listed
@@ -90,6 +111,7 @@ contract TradeflowMarket is ReceiverTemplate, ReentrancyGuard {
     uint256 public totalFiatIn; // stablecoins credited from verified fiat deposits
 
     mapping(uint256 => Loan) private s_loans;
+    mapping(uint256 => address) public loanToken; // loanId => the loan's ERC-3643 note token
     mapping(address => bool) public frozenBorrower;
     mapping(bytes32 => bool) public usedRef; // deposit, payout and payment references (replay guard)
     Reconciliation public lastReconciliation;
@@ -104,7 +126,9 @@ contract TradeflowMarket is ReceiverTemplate, ReentrancyGuard {
         uint8 riskGrade,
         bytes32 docHash
     );
+    event LoanTokenDeployed(uint256 indexed loanId, address token);
     event LenderVerified(address indexed lender, bool verified, bytes32 kycRef);
+    event IdentityRegistered(address indexed lender, address identity, uint16 country);
     event Funded(uint256 indexed loanId, address indexed lender, uint256 amount, bool viaFiat, bytes32 ref);
     event LoanFullyFunded(uint256 indexed loanId, address indexed borrower, uint256 amount);
     event Disbursed(uint256 indexed loanId, uint256 amount, bytes32 payoutRef, uint64 maturity);
@@ -132,11 +156,20 @@ contract TradeflowMarket is ReceiverTemplate, ReentrancyGuard {
     error ZeroAmount();
     error NoSettlementAccount();
 
-    constructor(address forwarder, IERC20 stablecoin_, LoanNotes notes_, address settlementAccount_)
-        ReceiverTemplate(forwarder)
-    {
+    constructor(
+        address forwarder,
+        IERC20 stablecoin_,
+        address settlementAccount_,
+        IIdentityRegistry identityRegistry_,
+        CreClaimIssuer claimIssuer_,
+        address trexAuthority_,
+        address identityAuthority_
+    ) ReceiverTemplate(forwarder) {
         stablecoin = stablecoin_;
-        notes = notes_;
+        identityRegistry = identityRegistry_;
+        claimIssuer = claimIssuer_;
+        trexAuthority = trexAuthority_;
+        identityAuthority = identityAuthority_;
         settlementAccount = settlementAccount_;
         emit SettlementAccountSet(settlementAccount_);
     }
@@ -145,9 +178,10 @@ contract TradeflowMarket is ReceiverTemplate, ReentrancyGuard {
     // Lender actions (stablecoin holders)
     // ---------------------------------------------------------------------
 
-    /// @notice Fund a listed loan with stablecoins. The lender must be KYC-verified by CRE.
+    /// @notice Fund a listed loan with stablecoins. The lender must be KYC-verified by CRE
+    ///         (verified in the identity registry); the loan's token enforces it again on mint.
     function fund(uint256 loanId, uint256 amount) external nonReentrant {
-        if (!notes.isVerifiedHolder(msg.sender)) revert NotVerified(msg.sender);
+        if (!identityRegistry.isVerified(msg.sender)) revert NotVerified(msg.sender);
         stablecoin.safeTransferFrom(msg.sender, address(this), amount);
         _fund(loanId, msg.sender, amount, false, bytes32(0));
     }
@@ -216,11 +250,36 @@ contract TradeflowMarket is ReceiverTemplate, ReentrancyGuard {
         l.ref = ref;
 
         emit LoanListed(loanId, borrower, ref, target, aprBps, tenorDays, riskGrade, docHash);
+
+        address token = _deployLoanToken(loanId);
+        loanToken[loanId] = token;
+        emit LoanTokenDeployed(loanId, token);
     }
 
+    /// @dev KYC result from CRE. Verified: the lender gets an ONCHAINID identity (a proxy managed
+    ///      by this market) on first verification, a KYC claim from CreClaimIssuer, and a
+    ///      wallet -> identity -> country entry in the identity registry. Not verified: the claim
+    ///      is revoked, so the registry stops verifying the wallet and the loan tokens refuse to
+    ///      mint to it or transfer to it.
     function _verifyLender(bytes memory payload) internal {
-        (address lender, bool verified, bytes32 kycRef) = abi.decode(payload, (address, bool, bytes32));
-        notes.setVerifiedHolder(lender, verified);
+        (address lender, bool verified, bytes32 kycRef, uint16 country) =
+            abi.decode(payload, (address, bool, bytes32, uint16));
+        IIdentity identity = identityRegistry.identity(lender);
+        if (verified) {
+            bool isNew = address(identity) == address(0);
+            if (isNew) identity = IIdentity(address(new IdentityProxy(identityAuthority, address(this))));
+            bytes memory data = abi.encode(kycRef);
+            claimIssuer.recordClaim(address(identity), KYC_TOPIC, data);
+            identity.addClaim(KYC_TOPIC, CLAIM_SCHEME_CONTRACT, address(claimIssuer), "", data, "");
+            if (isNew) {
+                identityRegistry.registerIdentity(lender, identity, country);
+                emit IdentityRegistered(lender, address(identity), country);
+            } else if (identityRegistry.investorCountry(lender) != country) {
+                identityRegistry.updateCountry(lender, country);
+            }
+        } else if (address(identity) != address(0)) {
+            claimIssuer.revokeClaim(keccak256(abi.encode(address(claimIssuer), KYC_TOPIC)), address(identity));
+        }
         emit LenderVerified(lender, verified, kycRef);
     }
 
@@ -232,7 +291,8 @@ contract TradeflowMarket is ReceiverTemplate, ReentrancyGuard {
         // The on-ramped stablecoins must already sit in the contract, unallocated.
         uint256 available = unallocated();
         if (available < amount) revert InsufficientUnallocated(available, amount);
-        if (!notes.isVerifiedHolder(lender)) notes.setVerifiedHolder(lender, true);
+        // Bank-transfer lenders go through the same CRE KYC report as wallet lenders first.
+        if (!identityRegistry.isVerified(lender)) revert NotVerified(lender);
         totalFiatIn += amount;
         s_loans[loanId].fiatFunded += amount;
         _fund(loanId, lender, amount, true, depositRef);
@@ -270,6 +330,9 @@ contract TradeflowMarket is ReceiverTemplate, ReentrancyGuard {
         l.repaidAt = uint64(block.timestamp);
         l.repaidAmount = amount;
         reserved += amount;
+        // A late loan's notes were paused; repayment makes them transferable again.
+        IToken token = IToken(loanToken[loanId]);
+        if (token.paused()) token.unpause();
         emit Repaid(loanId, amount, paymentRef);
         emit StatusChanged(loanId, Status.Repaid);
     }
@@ -292,6 +355,9 @@ contract TradeflowMarket is ReceiverTemplate, ReentrancyGuard {
         Status s = Status(newStatus);
         if (s != Status.Late && s != Status.Defaulted) revert BadStatus(loanId, s);
         l.status = s;
+        // Notes stop moving while the loan is delinquent.
+        IToken token = IToken(loanToken[loanId]);
+        if (!token.paused()) token.pause();
         emit StatusChanged(loanId, s);
         if (freezeBorrower && !frozenBorrower[l.borrower]) {
             frozenBorrower[l.borrower] = true;
@@ -325,7 +391,8 @@ contract TradeflowMarket is ReceiverTemplate, ReentrancyGuard {
 
         l.funded += amount;
         reserved += amount;
-        notes.mint(lender, loanId, amount);
+        // ERC-3643: the token mints only to wallets the identity registry verifies.
+        IToken(loanToken[loanId]).mint(lender, amount);
         emit Funded(loanId, lender, amount, viaFiat, ref);
 
         if (l.funded == l.target) {
@@ -339,12 +406,36 @@ contract TradeflowMarket is ReceiverTemplate, ReentrancyGuard {
     function _redeem(uint256 loanId, address lender) internal returns (uint256 payout) {
         Loan storage l = s_loans[loanId];
         if (l.status != Status.Repaid) revert BadStatus(loanId, l.status);
-        uint256 bal = notes.balanceOf(lender, loanId);
+        IToken token = IToken(loanToken[loanId]);
+        uint256 bal = token.balanceOf(lender);
         if (bal == 0) revert NothingToClaim();
         payout = (bal * l.repaidAmount) / l.target;
-        notes.burn(lender, loanId, bal);
+        token.burn(lender, bal);
         reserved -= payout;
         emit Claimed(loanId, lender, bal, payout);
+    }
+
+    /// @dev The loan's ERC-3643 token: a T-REX ModularCompliance proxy (no modules) and a T-REX
+    ///      TokenProxy on the shared identity registry. This market deploys both, so it owns them;
+    ///      it makes itself the token's agent (mint, burn, pause) and lifts the pause T-REX tokens
+    ///      start with.
+    function _deployLoanToken(uint256 loanId) internal returns (address) {
+        string memory id = Strings.toString(loanId);
+        address compliance = address(new ModularComplianceProxy(trexAuthority));
+        address token = address(
+            new TokenProxy(
+                trexAuthority,
+                address(identityRegistry),
+                compliance,
+                string.concat("Tradeflow Loan Note ", id),
+                string.concat("TFN", id),
+                NOTE_DECIMALS,
+                address(0)
+            )
+        );
+        AgentRoleUpgradeable(token).addAgent(address(this));
+        IToken(token).unpause();
+        return token;
     }
 
     // ---------------------------------------------------------------------

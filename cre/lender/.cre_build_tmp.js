@@ -26860,7 +26860,6 @@ var baseConfig = object({
   chainSelectorName: string2(),
   market: string2(),
   stablecoin: string2(),
-  notes: string2(),
   eurUsdFeed: string2(),
   railsUrl: string2(),
   gasLimit: string2()
@@ -26883,10 +26882,17 @@ var marketAbi = parseAbi([
   "function secondsPerDay() view returns (uint32)",
   "function usedRef(bytes32 ref) view returns (bool)",
   "function loanStates(uint256 fromId, uint256 toId) view returns (uint8[] statuses, uint64[] maturities, uint256[] funded, uint256[] fiatFunded)",
-  "function getLoan(uint256 loanId) view returns ((address borrower, uint8 assetType, uint8 riskGrade, bytes3 currency, uint8 status, uint32 aprBps, uint32 tenorDays, uint64 listedAt, uint64 fundedAt, uint64 disbursedAt, uint64 maturity, uint64 repaidAt, uint256 faceValueMinor, uint256 fxRateE8, uint256 target, uint256 funded, uint256 fiatFunded, uint256 repaidAmount, bytes32 docHash, string ref))"
+  "function getLoan(uint256 loanId) view returns ((address borrower, uint8 assetType, uint8 riskGrade, bytes3 currency, uint8 status, uint32 aprBps, uint32 tenorDays, uint64 listedAt, uint64 fundedAt, uint64 disbursedAt, uint64 maturity, uint64 repaidAt, uint256 faceValueMinor, uint256 fxRateE8, uint256 target, uint256 funded, uint256 fiatFunded, uint256 repaidAmount, bytes32 docHash, string ref))",
+  "function loanToken(uint256 loanId) view returns (address)",
+  "function identityRegistry() view returns (address)"
 ]);
 var erc20Abi2 = parseAbi(["function balanceOf(address) view returns (uint256)"]);
-var notesAbi = parseAbi(["function balanceOf(address account, uint256 id) view returns (uint256)"]);
+var loanTokenAbi = parseAbi([
+  "function balanceOf(address) view returns (uint256)",
+  "function totalSupply() view returns (uint256)",
+  "function paused() view returns (bool)"
+]);
+var identityRegistryAbi = parseAbi(["function isVerified(address) view returns (bool)"]);
 var feedAbi = parseAbi([
   "function latestRoundData() view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)"
 ]);
@@ -26938,6 +26944,17 @@ function writeAction(runtime, action, payload) {
   runtime.log(`report delivered: action=${action} tx=${hash}`);
   return hash;
 }
+function loanTokenOf(runtime, loanId) {
+  const token = read2(runtime, runtime.config.market, marketAbi, "loanToken", [loanId]);
+  if (token === zeroAddress)
+    throw new Error(`loan ${loanId} has no ERC-3643 token`);
+  return token;
+}
+function isVerifiedInRegistry(runtime, wallet) {
+  const registry = read2(runtime, runtime.config.market, marketAbi, "identityRegistry");
+  return read2(runtime, registry, identityRegistryAbi, "isVerified", [wallet]);
+}
+var tokenSymbol = (loanId) => `TFN${loanId}`;
 var refHash = (ref) => keccak256(toHex(ref));
 function decodeInput(input) {
   return JSON.parse(new TextDecoder().decode(input));
@@ -26964,6 +26981,76 @@ function confidentialGet(runtime, path) {
     throw new Error(`${path} HTTP ${res.statusCode}`);
   return json(res);
 }
+var ISO_NUMERIC = {
+  AE: 784,
+  AR: 32,
+  AT: 40,
+  AU: 36,
+  BD: 50,
+  BE: 56,
+  BR: 76,
+  CA: 124,
+  CH: 756,
+  CI: 384,
+  CL: 152,
+  CN: 156,
+  CO: 170,
+  CR: 188,
+  CU: 192,
+  CZ: 203,
+  DE: 276,
+  DK: 208,
+  EC: 218,
+  EG: 818,
+  ES: 724,
+  ET: 231,
+  FI: 246,
+  FR: 250,
+  GB: 826,
+  GH: 288,
+  GR: 300,
+  HK: 344,
+  HU: 348,
+  ID: 360,
+  IE: 372,
+  IL: 376,
+  IN: 356,
+  IR: 364,
+  IT: 380,
+  JP: 392,
+  KE: 404,
+  KP: 408,
+  KR: 410,
+  LK: 144,
+  MA: 504,
+  MX: 484,
+  MY: 458,
+  NG: 566,
+  NL: 528,
+  NO: 578,
+  NZ: 554,
+  PA: 591,
+  PE: 604,
+  PH: 608,
+  PK: 586,
+  PL: 616,
+  PT: 620,
+  QA: 634,
+  RO: 642,
+  SA: 682,
+  SE: 752,
+  SG: 702,
+  SY: 760,
+  TH: 764,
+  TR: 792,
+  TW: 158,
+  TZ: 834,
+  UG: 800,
+  US: 840,
+  UY: 858,
+  VN: 704,
+  ZA: 710
+};
 var onVerifyLender = (runtime, payload) => {
   const { lenderId } = decodeInput(payload.input);
   const kyc = confidentialGet(runtime, `/v1/kyc/${lenderId}`);
@@ -26972,9 +27059,23 @@ var onVerifyLender = (runtime, payload) => {
     runtime.log(`KYC not approved for ${lenderId}: ${kyc.status}`);
     return JSON.stringify({ verified: false, lenderId, status: kyc.status });
   }
+  const alpha2 = String(kyc.country ?? "").toUpperCase();
+  const country = ISO_NUMERIC[alpha2];
+  if (!country) {
+    const reason = `KYC country ${alpha2 || "(none)"} has no ISO 3166 numeric code on file, so no identity claim can be issued`;
+    runtime.log(`identity not registered: ${reason}`);
+    return JSON.stringify({ verified: false, lenderId, status: "unsupported country", reason });
+  }
+  const wallet = kyc.wallet;
+  if (isVerifiedInRegistry(runtime, wallet)) {
+    runtime.log("wallet already verified in the ERC-3643 identity registry, nothing to write");
+    return JSON.stringify({ verified: true, lenderId, wallet, level: kyc.level, country, alreadyVerified: true });
+  }
   const kycRef = refHash(`kyc|${kyc.lenderId}|${kyc.level}`);
-  const tx = writeAction(runtime, Action.VerifyLender, encodeAbiParameters(parseAbiParameters("address lender, bool verified, bytes32 kycRef"), [kyc.wallet, true, kycRef]));
-  return JSON.stringify({ verified: true, lenderId, wallet: kyc.wallet, level: kyc.level, tx });
+  const tx = writeAction(runtime, Action.VerifyLender, encodeAbiParameters(parseAbiParameters("address lender, bool verified, bytes32 kycRef, uint16 country"), [wallet, true, kycRef, country]));
+  const registered = isVerifiedInRegistry(runtime, wallet);
+  runtime.log(registered ? `KYC claim issued, wallet registered in the ERC-3643 identity registry (country ${country})` : "report accepted, but the ERC-3643 identity registry does not show the wallet as verified yet");
+  return JSON.stringify({ verified: true, lenderId, wallet, level: kyc.level, country, identityVerified: registered, tx });
 };
 var onFiatDeposit = (runtime, payload) => {
   const { reference } = decodeInput(payload.input);
@@ -27011,16 +27112,25 @@ var onFiatDeposit = (runtime, payload) => {
   if (unallocated < claimed)
     throw new Error(`only ${unallocated} unallocated in the market, need ${claimed}`);
   runtime.log("stablecoin amount recomputed and found in the market");
+  const loanId = BigInt(dep.loanId);
+  if (!isVerifiedInRegistry(runtime, dep.wallet))
+    throw new Error("lender wallet is not verified in the ERC-3643 identity registry");
+  const token = loanTokenOf(runtime, loanId);
+  const before = read2(runtime, token, loanTokenAbi, "balanceOf", [dep.wallet]);
   const tx = writeAction(runtime, Action.FiatFunding, encodeAbiParameters(parseAbiParameters("uint256 loanId, address lender, uint256 amount, bytes32 depositRef"), [
-    BigInt(dep.loanId),
+    loanId,
     dep.wallet,
     claimed,
     refHash(`deposit|${reference}`)
   ]));
+  const minted = read2(runtime, token, loanTokenAbi, "balanceOf", [dep.wallet]) - before;
+  runtime.log(`loan notes minted: ${(Number(minted) / 1e6).toFixed(2)} ${tokenSymbol(loanId)} (ERC-3643) to the lender's wallet`);
   return bigintJson({
     credited: true,
     reference,
     loanId: dep.loanId,
+    token,
+    notesMinted: minted,
     lender: dep.lenderId,
     fiat: `${dep.fiatAmountMinor / 100} ${dep.currency}`,
     providerRate,

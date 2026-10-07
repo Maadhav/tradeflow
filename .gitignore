@@ -9,3 +9,4 @@ services/rails/data/
 .DS_Store
 .secrets/
 demo/out/
+deck/.venv/

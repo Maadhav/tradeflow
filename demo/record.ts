@@ -568,7 +568,7 @@ async function main() {
     'The same run in the terminal: cre workflow simulate',
     'The CLI runs the TEE handler (declared for AWS Nitro) in its simulator and says so, then broadcasts the report to Sepolia.',
   )
-  await showTx(page, d0.tx, 'The listing report onchain', 'Delivered through the CRE forwarder to the market contract: LoanListed.')
+  await showTx(page, d0.tx, 'The listing report onchain', 'Delivered through the CRE forwarder to the market contract: LoanListed, and the loan gets its own ERC-3643 token.')
 
   // 4. A second invoice, which the buyer disputes
   await caption(page, 'A second invoice: EUR 50,000 to Northbrook Trading, UK', 'Same business, a different buyer.')
@@ -604,7 +604,7 @@ async function main() {
   await nav(page, 'Marketplace')
   await say(page, 'The loan is on the marketplace', 'Lenders see the grade, APR, term and funding progress. Never the credit file.')
   await click(page, page.locator('a.loan').first())
-  await say(page, 'The loan page', 'What was verified, the reference rate used at listing, and where the loan is in its life.')
+  await say(page, 'The loan page', "What was verified, the reference rate used at listing, the loan's own ERC-3643 token, and where the loan is in its life.")
   await audit(page, 'loan page (open)')
 
   // 6. Ana signs up and funds EUR 3,000 by bank transfer
@@ -618,7 +618,7 @@ async function main() {
   await type(page, page.locator('#lend-bank-bankAccount'), 'ES91 2100 0418 4502 0005 1332')
   after = await latestRunId()
   await click(page, button(page, 'Verify identity to lend'))
-  await caption(page, 'KYC over Confidential HTTP', 'The lender workflow fetches her KYC file over Confidential HTTP (the API secret is injected by the capability, not held in workflow code), then allowlists her for loan notes onchain.')
+  await caption(page, 'KYC over Confidential HTTP', 'The lender workflow fetches her KYC file over Confidential HTTP (the API secret is injected by the capability, not held in workflow code), then writes an ERC-3643 identity claim onchain.')
   await waitRun(after, 'verify-lender')
   await page.locator('#fiat-amount').waitFor({ timeout: 60_000 })
   await sleep(1500)
@@ -636,7 +636,7 @@ async function main() {
   )
   run = await waitRun(after, 'credit-fiat-deposit')
   await page.getByText('in loan notes issued').first().waitFor({ timeout: 30_000 }).catch(() => {})
-  await say(page, 'Ana holds loan notes', 'Credited onchain through the CRE forwarder. Notes can only be held by verified lenders.')
+  await say(page, 'Ana holds loan notes', `ERC-3643 tokens, one token per loan (this one is TFN${loan1.id}), minted through the CRE forwarder. Only wallets in the identity registry can hold them.`)
   await audit(page, 'loan page: bank transfer credited')
   await showTx(page, run.resultData?.tx, 'The funding report onchain', 'FiatFunding, written through the CRE forwarder after the deposit checks passed.')
 
@@ -657,7 +657,7 @@ async function main() {
   await choose(page, page.locator('#lend-usdc-country'), 'US')
   after = await latestRunId()
   await click(page, button(page, 'Verify identity to lend'))
-  await caption(page, 'Same KYC workflow, for a wallet', 'Approved, and the wallet is allowlisted for loan notes onchain.')
+  await caption(page, 'Same KYC workflow, for a wallet', 'Approved, and an ERC-3643 identity claim registers the wallet onchain.')
   await waitRun(after, 'verify-lender')
   await page.locator('#usdc-amount').waitFor({ timeout: 60_000 })
   await sleep(1500)
@@ -832,9 +832,9 @@ async function main() {
   row = await openNewestRun(page, 'Automated checks')
   run = await waitRun(after, 'watch-and-reconcile')
   await sleep(2000)
-  await say(page, 'Late, and the business is frozen', 'The monitor marks the loan Late and freezes Rapid Parts onchain, so it cannot list again until it settles.')
+  await say(page, 'Late, the token paused, the business frozen', "The monitor marks the loan Late, which pauses the loan's ERC-3643 token, and freezes Rapid Parts so it cannot list again until it settles.")
   await closeRun(page, row)
-  await showTx(page, run.resultData?.statusChanges?.[0]?.tx, 'Late status onchain', 'StatusChanged and BorrowerFrozen, written by the monitor.')
+  await showTx(page, run.resultData?.statusChanges?.[0]?.tx, 'Late status onchain', 'StatusChanged and BorrowerFrozen, and the loan token paused, in one report from the monitor.')
   await nav(page, 'Raise capital')
   await sleep(1500)
   await say(page, 'Rapid Parts sees why', 'New requests cannot be listed until the overdue invoice is settled.')
@@ -845,7 +845,7 @@ async function main() {
   await say(
     page,
     'Tradeflow, run by four Chainlink CRE workflows',
-    'A TEE-declared handler for credit files, Confidential HTTP for KYC and bank APIs, the EUR/USD Data Feed, log and cron triggers, two-source consensus, writes through the forwarder. Built by CodeDecoders, the team behind GSOS.',
+    'A TEE-declared handler for credit files, Confidential HTTP for KYC and bank APIs, ERC-3643 loan tokens with CRE as the KYC claim issuer, the EUR/USD Data Feed, log and cron triggers, two-source consensus. Built by CodeDecoders, the team behind GSOS.',
     3000,
   )
   await audit(page, 'marketplace (final)')

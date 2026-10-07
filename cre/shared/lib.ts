@@ -29,7 +29,6 @@ export const baseConfig = z.object({
   chainSelectorName: z.string(),
   market: z.string(),
   stablecoin: z.string(),
-  notes: z.string(),
   eurUsdFeed: z.string(),
   railsUrl: z.string(),
   gasLimit: z.string(),
@@ -59,9 +58,18 @@ export const marketAbi = parseAbi([
   'function usedRef(bytes32 ref) view returns (bool)',
   'function loanStates(uint256 fromId, uint256 toId) view returns (uint8[] statuses, uint64[] maturities, uint256[] funded, uint256[] fiatFunded)',
   'function getLoan(uint256 loanId) view returns ((address borrower, uint8 assetType, uint8 riskGrade, bytes3 currency, uint8 status, uint32 aprBps, uint32 tenorDays, uint64 listedAt, uint64 fundedAt, uint64 disbursedAt, uint64 maturity, uint64 repaidAt, uint256 faceValueMinor, uint256 fxRateE8, uint256 target, uint256 funded, uint256 fiatFunded, uint256 repaidAmount, bytes32 docHash, string ref))',
+  'function loanToken(uint256 loanId) view returns (address)',
+  'function identityRegistry() view returns (address)',
 ])
 export const erc20Abi = parseAbi(['function balanceOf(address) view returns (uint256)'])
-export const notesAbi = parseAbi(['function balanceOf(address account, uint256 id) view returns (uint256)'])
+/** A loan's notes: its own ERC-3643 (T-REX) security token, an ERC-20 with 6 decimals, paused while the loan is late. */
+export const loanTokenAbi = parseAbi([
+  'function balanceOf(address) view returns (uint256)',
+  'function totalSupply() view returns (uint256)',
+  'function paused() view returns (bool)',
+])
+/** The ERC-3643 identity registry shared by every loan token: a wallet holds notes only when verified here. */
+export const identityRegistryAbi = parseAbi(['function isVerified(address) view returns (bool)'])
 export const feedAbi = parseAbi([
   'function latestRoundData() view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)',
 ])
@@ -126,6 +134,22 @@ export function writeAction(runtime: Runtime<BaseConfig>, action: number, payloa
   runtime.log(`report delivered: action=${action} tx=${hash}`)
   return hash
 }
+
+/** The ERC-3643 token the market deployed for a loan when it was listed. */
+export function loanTokenOf(runtime: Runtime<BaseConfig>, loanId: bigint): Address {
+  const token = read<Address>(runtime, runtime.config.market, marketAbi, 'loanToken', [loanId])
+  if (token === zeroAddress) throw new Error(`loan ${loanId} has no ERC-3643 token`)
+  return token
+}
+
+/** True when the wallet is verified in the market's ERC-3643 identity registry (a valid KYC claim on its ONCHAINID). */
+export function isVerifiedInRegistry(runtime: Runtime<BaseConfig>, wallet: Address): boolean {
+  const registry = read<Address>(runtime, runtime.config.market, marketAbi, 'identityRegistry')
+  return read<boolean>(runtime, registry, identityRegistryAbi, 'isVerified', [wallet])
+}
+
+/** Symbol of a loan's ERC-3643 token, as the market names it. */
+export const tokenSymbol = (loanId: bigint | number) => `TFN${loanId}`
 
 export const refHash = (ref: string): Hex => keccak256(toHex(ref))
 

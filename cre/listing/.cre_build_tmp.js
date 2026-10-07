@@ -26865,7 +26865,6 @@ var baseConfig = object({
   chainSelectorName: string2(),
   market: string2(),
   stablecoin: string2(),
-  notes: string2(),
   eurUsdFeed: string2(),
   railsUrl: string2(),
   gasLimit: string2()
@@ -26888,10 +26887,17 @@ var marketAbi = parseAbi([
   "function secondsPerDay() view returns (uint32)",
   "function usedRef(bytes32 ref) view returns (bool)",
   "function loanStates(uint256 fromId, uint256 toId) view returns (uint8[] statuses, uint64[] maturities, uint256[] funded, uint256[] fiatFunded)",
-  "function getLoan(uint256 loanId) view returns ((address borrower, uint8 assetType, uint8 riskGrade, bytes3 currency, uint8 status, uint32 aprBps, uint32 tenorDays, uint64 listedAt, uint64 fundedAt, uint64 disbursedAt, uint64 maturity, uint64 repaidAt, uint256 faceValueMinor, uint256 fxRateE8, uint256 target, uint256 funded, uint256 fiatFunded, uint256 repaidAmount, bytes32 docHash, string ref))"
+  "function getLoan(uint256 loanId) view returns ((address borrower, uint8 assetType, uint8 riskGrade, bytes3 currency, uint8 status, uint32 aprBps, uint32 tenorDays, uint64 listedAt, uint64 fundedAt, uint64 disbursedAt, uint64 maturity, uint64 repaidAt, uint256 faceValueMinor, uint256 fxRateE8, uint256 target, uint256 funded, uint256 fiatFunded, uint256 repaidAmount, bytes32 docHash, string ref))",
+  "function loanToken(uint256 loanId) view returns (address)",
+  "function identityRegistry() view returns (address)"
 ]);
 var erc20Abi2 = parseAbi(["function balanceOf(address) view returns (uint256)"]);
-var notesAbi = parseAbi(["function balanceOf(address account, uint256 id) view returns (uint256)"]);
+var loanTokenAbi = parseAbi([
+  "function balanceOf(address) view returns (uint256)",
+  "function totalSupply() view returns (uint256)",
+  "function paused() view returns (bool)"
+]);
+var identityRegistryAbi = parseAbi(["function isVerified(address) view returns (bool)"]);
 var feedAbi = parseAbi([
   "function latestRoundData() view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)"
 ]);
@@ -26943,6 +26949,7 @@ function writeAction(runtime, action, payload) {
   runtime.log(`report delivered: action=${action} tx=${hash}`);
   return hash;
 }
+var tokenSymbol = (loanId) => `TFN${loanId}`;
 function decodeInput(input) {
   return JSON.parse(new TextDecoder().decode(input));
 }
@@ -27029,9 +27036,15 @@ var onSubmission = (runtime, payload) => {
     req.docNumber
   ]);
   const tx = writeAction(don, Action.ListLoan, listPayload);
+  const loanId = read2(don, runtime.config.market, marketAbi, "loanCount");
+  const listed = read2(don, runtime.config.market, marketAbi, "getLoan", [loanId]);
+  const token = listed.docHash === reg.docHash ? read2(don, runtime.config.market, marketAbi, "loanToken", [loanId]) : undefined;
+  if (token)
+    don.log(`loan ${loanId} listed with its own ERC-3643 token ${tokenSymbol(loanId)} at ${token}`);
   return bigintJson({
     listed: true,
     docNumber: req.docNumber,
+    ...token ? { loanId, token } : {},
     grade: "ABCDE"[card.grade - 1],
     aprBps,
     tenorDays,

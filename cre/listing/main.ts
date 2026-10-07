@@ -8,7 +8,8 @@
 // `cre workflow simulate` runs the same handler locally, outside any enclave.
 // Then, on the DON: check the market has not financed this document already, read Chainlink's
 // EUR/USD Data Feed to price non-USD documents, build the ListLoan report and deliver it to
-// TradeflowMarket through the CRE forwarder.
+// TradeflowMarket through the CRE forwarder. Listing deploys the loan's own ERC-3643 (T-REX)
+// token, "Tradeflow Loan Note <id>" (TFN<id>), which carries the loan notes lenders will hold.
 
 import {
   HTTPCapability,
@@ -23,7 +24,7 @@ import {
 } from '@chainlink/cre-sdk'
 import { encodeAbiParameters, parseAbiParameters, toHex, type Address, type Hex } from 'viem'
 import { z } from 'zod'
-import { Action, baseConfig, bigintJson, decodeInput, marketAbi, read, readEurUsd, toUsd6, writeAction } from './lib'
+import { Action, baseConfig, bigintJson, decodeInput, marketAbi, read, readEurUsd, toUsd6, tokenSymbol, writeAction } from './lib'
 
 const configSchema = baseConfig.extend({
   authorizedKeys: z.array(z.string()),
@@ -170,9 +171,16 @@ const onSubmission = (runtime: TeeRuntime<Config>, payload: HTTPPayload): string
     ],
   )
   const tx = writeAction(don, Action.ListLoan, listPayload)
+
+  // The market deployed the loan's ERC-3643 token with the listing; find it for the record.
+  const loanId = read<bigint>(don, runtime.config.market, marketAbi, 'loanCount')
+  const listed = read<{ docHash: Hex }>(don, runtime.config.market, marketAbi, 'getLoan', [loanId])
+  const token = listed.docHash === reg.docHash ? read<Address>(don, runtime.config.market, marketAbi, 'loanToken', [loanId]) : undefined
+  if (token) don.log(`loan ${loanId} listed with its own ERC-3643 token ${tokenSymbol(loanId)} at ${token}`)
   return bigintJson({
     listed: true,
     docNumber: req.docNumber,
+    ...(token ? { loanId, token } : {}),
     grade: 'ABCDE'[card.grade - 1],
     aprBps,
     tenorDays,

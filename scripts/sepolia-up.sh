@@ -28,10 +28,17 @@ topup "$(addr ben)" "${BEN_ETH:-0.02}"
 
 if [ ! -f "$ROOT/contracts/deployments/sepolia.json" ] || [ "${REDEPLOY:-0}" = "1" ]; then
   rm -f "$ROOT/services/rails/data/state.sepolia.json"
+  # Contract creation on the upgraded Sepolia costs about 7x what forge simulates, hence the gas
+  # multiplier. The max fee follows the current base fee (2 x base fee + 0.05 gwei) instead of a
+  # fixed price, so the upfront balance for the large T-REX deployments stays small.
+  # GAS_PRICE (wei, or e.g. 1.6gwei) overrides it.
+  base_fee=$(cast base-fee --rpc-url "$RPC")
+  max_fee="${GAS_PRICE:-$(python3 -c "print(2*int('$base_fee') + 50_000_000)")}"
+  echo "base fee $base_fee wei, max fee $max_fee"
   (cd "$ROOT/contracts" && FORWARDER=$FORWARDER SETTLEMENT_ACCOUNT="$(addr settlement)" ONRAMP_OPERATOR="$(addr platform)" \
     SECONDS_PER_DAY="${SECONDS_PER_DAY:-60}" DEPLOY_NAME=sepolia \
     forge script script/Deploy.s.sol --rpc-url "$RPC" --broadcast --private-key "$(key platform)" --slow \
-    --gas-estimate-multiplier "${GAS_MULT:-760}" --with-gas-price "${GAS_PRICE:-1.6gwei}" --priority-gas-price 0.05gwei >"$RUN/deploy-sepolia.log" 2>&1)
+    --gas-estimate-multiplier "${GAS_MULT:-760}" --with-gas-price "$max_fee" --priority-gas-price 0.05gwei >"$RUN/deploy-sepolia.log" 2>&1)
 fi
 cat "$ROOT/contracts/deployments/sepolia.json"
 
@@ -42,7 +49,9 @@ dep = json.load(open(f"{root}/contracts/deployments/sepolia.json"))
 signer = json.load(open(f"{root}/services/rails/addresses.json"))["creSigner"]
 for w in ["listing", "lender", "settlement", "monitor"]:
     c = json.load(open(f"{root}/cre/{w}/config.local.json"))
-    c.update(market=dep["market"], stablecoin=dep["stablecoin"], notes=dep["notes"], railsUrl="http://localhost:8788")
+    c.update(market=dep["market"], stablecoin=dep["stablecoin"], railsUrl="http://localhost:8788")
+    c.pop("notes", None)
+    c.pop("notes", None)  # loan notes are per-loan ERC-3643 tokens, found through market.loanToken(id)
     if "secretOwner" in c:
         c["secretOwner"] = signer
     if "logConfidence" in c:

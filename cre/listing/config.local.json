@@ -1,11 +1,10 @@
 {
   "chainSelectorName": "ethereum-testnet-sepolia",
-  "market": "0xDf601d9Fe0C1fee484963a46E52FB9F58f90CD48",
-  "stablecoin": "0xe27D6A2DCEB59696920CEF0B210439E278b7EA6b",
-  "notes": "0x5B925E5ADe82A7888844Ce8b49bb904091664FEB",
+  "market": "0xb159530f03149768447Bcb16F426685D7e70E642",
+  "stablecoin": "0x61543Dd217E214C9EaBa4598189BedB5d59aA865",
   "eurUsdFeed": "0x1a81afB8146aeFfCFc5E50e8479e826E7D55b910",
   "railsUrl": "http://localhost:8787",
-  "gasLimit": "5000000",
+  "gasLimit": "10000000",
   "authorizedKeys": [],
   "apiKeySecretId": "RAILS_API_KEY",
   "minScore": 650
