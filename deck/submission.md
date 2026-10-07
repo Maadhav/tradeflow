@@ -7,9 +7,9 @@ Tradeflow
 Fund the goods already on their way: invoice financing where every off-chain decision runs as a Chainlink CRE workflow and every loan is an ERC-3643 token.
 
 ## Short description
-Small exporters wait 60 to 180 days to be paid for goods they have already shipped. Tradeflow lets a business request an advance on a confirmed invoice, bill of lading or equipment order. Its buyer confirms the document through a link, and lenders fund it by bank transfer or with USDC from their own wallet. The business is paid out in fiat, and when the buyer pays, lenders are repaid automatically. Every decision that depends on facts outside the chain is made by a Chainlink CRE workflow and lands onchain as a signed report:
+Small exporters wait 60 to 180 days to be paid for goods they have already shipped. Tradeflow lets a business request an advance on a confirmed invoice, bill of lading or equipment order from its own portal. Its buyer confirms the document through a link, and investors fund it from theirs, by bank transfer or with USDC from their own wallet, and follow their positions in a portfolio. The business is paid out in fiat, and when the buyer pays, investors are repaid automatically. Every decision that depends on facts outside the chain is made by a Chainlink CRE workflow and lands onchain as a signed report:
 - the credit review, run as a confidential (TEE) handler;
-- lender KYC and fiat deposits, over Confidential HTTP;
+- lender KYC, and ordering the on-ramp to convert bank transfers, over Confidential HTTP;
 - payouts and repayments, through log triggers with two-source consensus;
 - risk and reserve monitoring, on a cron schedule with an onchain circuit breaker.
 
@@ -20,7 +20,7 @@ Small exporters wait 60 to 180 days to be paid for goods they have already shipp
   - Before writing, it checks the document was not financed already. Non-USD documents are priced with the Chainlink EUR/USD Data Feed.
 - **Lender workflow:**
   - KYC over Confidential HTTP with a Vault DON secret, which issues the lender's ERC-3643 KYC claim and registers the wallet in the identity registry.
-  - Bank-transfer deposits are verified over Confidential HTTP. The on-ramp's rate must stay within a tolerance of the Data Feed before notes are issued.
+  - When the bank reports a lender's transfer, the workflow sets a price limit from the Data Feed and instructs the on-ramp over Confidential HTTP to convert it and deliver USDC to the market (sent once, idempotent by reference). It then checks the executed rate and that the USDC arrived before notes are issued.
 - **Settlement workflow:**
   - An EVM log trigger on full funding instructs the fiat payout to the business.
   - The buyer's repayment is accepted only when the collection bank and the payment processor agree (node-mode consensus).
@@ -32,6 +32,12 @@ Small exporters wait 60 to 180 days to be paid for goods they have already shipp
 - **Monitor workflow (cron):**
   - Marks overdue loans Late or Defaulted and freezes the business.
   - Runs a three-way reconciliation (bank books, on-ramp mints, onchain credits). A mismatch pauses new funding onchain until an operator resumes it.
+
+## Product
+- **Business portal (/business):** create an account, an overview of advances, amounts owed by buyers and repayments, every document with its status and buyer link, and a form to request financing with the document attached.
+- **Investor portal (/investor):** start by bank transfer or with a wallet, pass KYC, then a portfolio (invested, expected returns, received, ready to claim, positions held as ERC-3643 notes) and a marketplace of open loans.
+- **Buyer link:** the buyer confirms or disputes the document, and later pays it.
+- **Operations console:** reserve checks, the funding circuit breaker and loan health.
 
 ## Built with
 Chainlink CRE (TypeScript SDK; HTTP, cron and EVM log triggers; Confidential Workflows via `handlerInTee`; Confidential HTTP; consensus; EVM read and write through the CRE forwarder), the Chainlink EUR/USD Data Feed, Solidity (Foundry; ERC-3643 T-REX and ONCHAINID; the market contract as a CRE report receiver), Ethereum Sepolia, Bun, React and viem.
@@ -47,9 +53,9 @@ Confidential Workflow evidence:
 
 ## Links
 - Repo: https://github.com/Maadhav/tradeflow
-- Live demo: (to add)
-- Slides: (Google Drive link to Tradeflow.pptx, to add)
-- Evidence: https://github.com/Maadhav/tradeflow/tree/main/evidence
+- Project link (hosted demo video): (your video link)
+- Slides: (Google Drive link to Tradeflow.pptx)
+- CRE simulation evidence: https://github.com/Maadhav/tradeflow/tree/main/evidence (14 runs on Ethereum Sepolia with full terminal output and transaction links; the listing run shows the TEE execution banner)
 
 ## Team
 Maadhav Sharma, Founder & CEO, CodeDecoders (the team behind GSOS).
