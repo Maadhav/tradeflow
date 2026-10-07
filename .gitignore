@@ -10,3 +10,8 @@ services/rails/data/
 .secrets/
 demo/out/
 deck/.venv/
+
+# Deck build outputs and local recordings
+deck/video/
+deck/pdf/demo-background.png
+deck/pdf/video-poster.png

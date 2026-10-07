@@ -4,8 +4,10 @@ Each slide is the full-bleed image of the HTML deck. The demo slide shows the vi
 screenshot, with a poster frame taken from the video, so it plays on stage from the slide itself.
 
 Usage: deck/.venv/bin/python deck/build_pptx.py <video.mp4> [demo slide number, default 7] [out.pptx]
+POSTER_AT=<seconds> picks the poster frame (default 2).
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -23,7 +25,7 @@ if not video.exists():
     sys.exit(f"video not found: {video}")
 
 poster = HERE / "pdf" / "video-poster.png"
-subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", "2", "-i", str(video), "-frames:v", "1", str(poster)], check=True)
+subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", os.environ.get("POSTER_AT", "2"), "-i", str(video), "-frames:v", "1", str(poster)], check=True)
 probe = subprocess.run(
     ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", str(video)],
     check=True, capture_output=True, text=True,
