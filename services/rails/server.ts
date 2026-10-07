@@ -175,9 +175,9 @@ for (const r of state.runs) {
   r.logs.push('stopped by a server restart')
 }
 let saveTimer: ReturnType<typeof setTimeout> | undefined
-let stateCache: { at: number; value: Promise<unknown> } | undefined // /api/state, see cachedState()
+let chainChanged = () => {} // set below: marks the cached chain reads stale (see swr)
 function persist() {
-  stateCache = undefined
+  chainChanged()
   clearTimeout(saveTimer)
   saveTimer = setTimeout(() => Bun.write(STATE_FILE, JSON.stringify(state, null, 2)), 50)
 }
@@ -758,7 +758,7 @@ async function watch() {
     })
     lastBlock = head
     for (const log of logs) {
-      stateCache = undefined
+      chainChanged()
       broadcast('chain', { tx: log.transactionHash, topic: log.topics[0], block: String(log.blockNumber) })
       if (!AUTO_RUN) continue
       const t = log.topics[0]
@@ -1042,7 +1042,32 @@ async function businessView(business: Business) {
 // ---------------------------------------------------------------------------
 
 // The /api/state body: market reads (batched into Multicall3) plus the rails books.
-async function buildState() {
+/**
+ * Serve the last good value at once and refresh it in the background, one refresh at a time.
+ * Public RPCs throttle hard; nothing a person clicks should wait on them. The first call waits.
+ */
+function swr<T>(build: () => Promise<T>, ttlMs: number) {
+  let value: T | undefined
+  let at = 0
+  let pending: Promise<T> | undefined
+  const refresh = () =>
+    (pending ??= build()
+      .then((v) => ((value = v), (at = Date.now()), v))
+      .finally(() => (pending = undefined)))
+  return {
+    get(): Promise<T> {
+      if (value === undefined) return refresh()
+      if (Date.now() - at > ttlMs) void refresh().catch((e: Error) => console.error('refresh', e.message.split('\n')[0]))
+      return Promise.resolve(value)
+    },
+    stale() {
+      at = 0
+    },
+  }
+}
+
+// The market's state from the chain: loans, the snapshot and the funding history.
+const chainState = swr(async () => {
   const snap = await chain.marketSnapshot()
   const count = Number(snap.loanCount)
   const loans = await Promise.all(
@@ -1055,6 +1080,25 @@ async function buildState() {
   const fundingEvents = await scanLogs('Funded|*', (fromBlock, toBlock) =>
     chain.publicClient.getContractEvents({ address: deployment.market, abi: marketAbi, eventName: 'Funded', fromBlock, toBlock }),
   ).catch(() => [])
+  return { snapshot: snap, loans, fundings: fundingEvents.map((e) => ({ ...e.args, tx: e.transactionHash })) }
+}, 3_000)
+
+// Portfolios, one cache per investor.
+const portfolios = new Map<string, ReturnType<typeof swr<unknown>>>()
+const cachedPortfolio = (lender: Lender) => {
+  let p = portfolios.get(lender.id)
+  if (!p) portfolios.set(lender.id, (p = swr<unknown>(() => portfolioOf(lender), 4_000)))
+  return p.get()
+}
+
+chainChanged = () => {
+  chainState.stale()
+  for (const p of portfolios.values()) p.stale()
+}
+
+/** /api/state: the chain part from the cache, everything the app keeps itself always current. */
+async function cachedState() {
+  const onchain = await chainState.get()
   const credited = state.intents.filter((i) => i.status === 'credited')
   const sum = (xs: Intent[]) => xs.reduce((t, i) => t + BigInt(i.stablecoinAmount ?? '0'), 0n)
   const books = {
@@ -1062,10 +1106,8 @@ async function buildState() {
     onrampUsd6: sum(credited.filter((i) => i.mintTx)).toString(),
   }
   return {
-    snapshot: snap,
+    ...onchain,
     books,
-    loans,
-    fundings: fundingEvents.map((e) => ({ ...e.args, tx: e.transactionHash })),
     businesses: state.businesses.map(publicBusiness),
     documents: state.documents.map(publicDocument),
     lenders: state.lenders.map(publicLender),
@@ -1076,19 +1118,6 @@ async function buildState() {
     ledgerAdjustments: state.ledgerAdjustments,
     queue: bridge.queueLength(),
   }
-}
-
-// Every open page polls /api/state; share one chain read per STATE_TTL_MS between them.
-const STATE_TTL_MS = 2_000
-function cachedState() {
-  if (!stateCache || Date.now() - stateCache.at > STATE_TTL_MS) {
-    const value = buildState()
-    stateCache = { at: Date.now(), value }
-    value.catch(() => {
-      if (stateCache?.value === value) stateCache = undefined
-    })
-  }
-  return stateCache.value
 }
 
 const server = Bun.serve({
@@ -1699,7 +1728,7 @@ const server = Bun.serve({
 
     // The investor's own portfolio (signed in): positions, deposits, totals and identity status.
     '/api/investors/:id/portfolio': {
-      GET: async (req) => json(await portfolioOf(signedInInvestor(req, req.params.id))),
+      GET: async (req) => json(await cachedPortfolio(signedInInvestor(req, req.params.id))),
     },
     '/api/lenders/:id/kyc': {
       POST: (req) => {
