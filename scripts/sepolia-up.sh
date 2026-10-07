@@ -71,7 +71,7 @@ PY
 
 kill $(lsof -ti :8788) 2>/dev/null || true # the Sepolia app
 sleep 1
-(cd "$ROOT/services/rails" && PORT=8788 DEPLOYMENT=sepolia RPC_URL="$APP_RPC" PUBLIC_RPC_URL="$RPC" CRE_TARGET=sepolia EXPLORER=https://sepolia.etherscan.io \
+(cd "$ROOT/services/rails" && NODE_ENV=production PORT=8788 DEPLOYMENT=sepolia RPC_URL="$APP_RPC" PUBLIC_RPC_URL="$RPC" CRE_TARGET=sepolia EXPLORER=https://sepolia.etherscan.io \
   exec nohup bun run server.ts >"$RUN/rails-sepolia.log" 2>&1 </dev/null & echo $! >"$RUN/rails-sepolia.pid")
 sleep 5
 tail -2 "$RUN/rails-sepolia.log"
