@@ -12,6 +12,7 @@ key() { python3 -c "import json;print(json.load(open('$KEYS'))['$1'])"; }
 addr() { python3 -c "import json;print(json.load(open('$ROOT/services/rails/addresses.json'))['$1'])"; }
 RPC="${SEPOLIA_RPC:-https://ethereum-sepolia-rpc.publicnode.com}"
 CRE_RPC="${CRE_RPC:-$RPC}" # the CRE simulator's RPC; a separate endpoint spreads load off the app's
+APP_RPC="${APP_RPC:-$RPC}" # the app server's own RPC (may carry a provider key; the browser is given $RPC)
 FORWARDER=0x15fC6ae953E024d975e77382eEeC56A9101f9F88 # Sepolia MockKeystoneForwarder (CRE simulation)
 
 echo "platform balance: $(cast balance "$(addr platform)" --rpc-url "$RPC" --ether) ETH"
@@ -70,7 +71,7 @@ PY
 
 kill $(lsof -ti :8788) 2>/dev/null || true # the Sepolia app
 sleep 1
-(cd "$ROOT/services/rails" && PORT=8788 DEPLOYMENT=sepolia RPC_URL="$RPC" CRE_TARGET=sepolia EXPLORER=https://sepolia.etherscan.io \
+(cd "$ROOT/services/rails" && PORT=8788 DEPLOYMENT=sepolia RPC_URL="$APP_RPC" PUBLIC_RPC_URL="$RPC" CRE_TARGET=sepolia EXPLORER=https://sepolia.etherscan.io \
   exec nohup bun run server.ts >"$RUN/rails-sepolia.log" 2>&1 </dev/null & echo $! >"$RUN/rails-sepolia.pid")
 sleep 5
 tail -2 "$RUN/rails-sepolia.log"

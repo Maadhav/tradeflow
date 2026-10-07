@@ -797,7 +797,8 @@ const server = Bun.serve({
         json({
           deployment,
           deploymentName: DEPLOYMENT,
-          rpcUrl: RPC_URL,
+          // The browser gets a public endpoint; the server's own RPC_URL may carry a provider key.
+          rpcUrl: process.env.PUBLIC_RPC_URL ?? RPC_URL,
           explorer: process.env.EXPLORER ?? null,
           chainId: deployment.chainId,
           builtinWallets: BUILTIN_WALLETS,
