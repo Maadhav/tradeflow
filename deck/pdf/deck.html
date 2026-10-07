@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tradeflow</title>
+<style>
+  @font-face { font-family: Tf; src: url("fonts/Archivo-400.ttf") format("truetype"); font-weight: 400; }
+  @font-face { font-family: Tf; src: url("fonts/Archivo-600.ttf") format("truetype"); font-weight: 600; }
+  @font-face { font-family: Tf; src: url("fonts/Archivo-700.ttf") format("truetype"); font-weight: 700; }
+  @font-face { font-family: Tf; src: url("fonts/Archivo-800.ttf") format("truetype"); font-weight: 800; }
+  @font-face { font-family: TfWide; src: url("fonts/Archivo-800-wide.ttf") format("truetype"); font-weight: 800; }
+  
+  :root { --ink: #14202b; --ink2: #3a4a59; --muted: #6b7a88; --line: #d9dfe5; --paper: #f2f4f6; --crane: #f2b705; --good: #1e7a4c; }
+  @page { size: 1280px 720px; margin: 0; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--paper); }
+  body { font-family: Tf, Arial, sans-serif; color: var(--ink); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .slide { width: 1280px; height: 720px; padding: 64px 72px; position: relative; overflow: hidden; page-break-after: always; break-after: page; background: var(--paper); }
+  .slide.dark { background: var(--ink); color: #fff; }
+  h1, h2, .stat, .mark, .card h3 { font-family: TfWide, Tf, Arial, sans-serif; }
+  h1 { font-size: 72px; line-height: 1.02; font-weight: 800; letter-spacing: -1.5px; margin: 0; }
+  h2 { font-size: 46px; line-height: 1.06; font-weight: 800; letter-spacing: -0.8px; margin: 0 0 28px; max-width: 980px; }
+  p { margin: 0; }
+  .lede { font-size: 22px; line-height: 1.45; color: var(--ink2); max-width: 760px; }
+  .dark .lede { color: #c9d3dc; }
+  .mark { display: flex; align-items: center; gap: 12px; font-weight: 800; font-size: 26px; }
+  .foot { position: absolute; left: 72px; right: 72px; bottom: 34px; display: flex; justify-content: space-between; font-size: 14px; color: var(--muted); }
+  .dark .foot { color: #8a98a5; }
+  .shot { border-radius: 10px; box-shadow: 0 18px 50px rgba(20, 32, 43, 0.18); border: 1px solid var(--line); display: block; }
+  .row { display: flex; gap: 40px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; }
+  .card h3 { margin: 0 0 6px; font-size: 22px; font-weight: 800; }
+  .card .tags { font-size: 13.5px; color: var(--muted); margin-bottom: 12px; }
+  .card p { font-size: 17px; line-height: 1.4; color: var(--ink2); }
+  .lane { display: flex; align-items: flex-start; margin-top: 8px; }
+  .stop { flex: 1; position: relative; padding-top: 34px; padding-right: 18px; }
+  .stop::before { content: ""; position: absolute; top: 8px; left: 0; width: 18px; height: 18px; border-radius: 50%; background: var(--crane); }
+  .stop::after { content: ""; position: absolute; top: 16px; left: 26px; right: 8px; border-top: 2px dashed var(--line-strong, #b9c3cc); }
+  .stop:last-child::after { display: none; }
+  .stop:last-child::before { background: var(--ink); }
+  .stop b { display: block; font-size: 15px; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
+  .stop span { font-size: 21px; font-weight: 700; line-height: 1.25; }
+  .list { margin: 0; padding: 0; list-style: none; }
+  .list li { font-size: 21px; line-height: 1.4; padding: 12px 0 12px 30px; position: relative; border-top: 1px solid var(--line); color: var(--ink2); }
+  .list li:first-child { border-top: 0; }
+  .list li::before { content: ""; position: absolute; left: 2px; top: 22px; width: 12px; height: 12px; border-radius: 50%; background: var(--crane); }
+  .list li strong { color: var(--ink); }
+  .stat { font-size: 120px; font-weight: 800; letter-spacing: -3px; line-height: 1; }
+  .src { font-size: 14px; color: var(--muted); margin-top: 14px; }
+  .flow { display: flex; align-items: center; gap: 14px; margin-top: 22px; }
+  .node { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; font-size: 17px; font-weight: 700; text-align: center; min-width: 170px; }
+  .node small { display: block; font-weight: 500; color: var(--muted); font-size: 13.5px; margin-top: 4px; }
+  .node.hi { border-color: var(--crane); box-shadow: inset 0 0 0 1px var(--crane); }
+  .arrow { color: var(--muted); font-size: 22px; }
+  .caption { font-size: 14.5px; color: var(--muted); margin-top: 12px; line-height: 1.4; }
+  code { font-family: ui-monospace, Menlo, monospace; font-size: 0.92em; background: rgba(20, 32, 43, 0.06); padding: 1px 6px; border-radius: 5px; }
+  .dark code { background: rgba(255, 255, 255, 0.1); }
+</style>
+</head>
+<body>
+
+<!-- 1. Title -->
+<section class="slide dark">
+  <div class="mark"><svg width="34" height="22" viewBox="0 0 34 22"><circle cx="5" cy="11" r="5" fill="#f2b705"/><circle cx="29" cy="11" r="4" fill="none" stroke="#fff" stroke-width="2.5"/><path d="M12 11h11" stroke="#fff" stroke-width="2.5" stroke-dasharray="3 3"/></svg>Tradeflow</div>
+  <div style="display:flex;gap:48px;margin-top:70px;align-items:flex-start">
+    <div style="flex:1">
+      <h1>Fund the goods already on their way.</h1>
+      <p class="lede" style="margin-top:28px">Invoice financing where every off-chain decision is a Chainlink CRE workflow, and every loan is an ERC-3643 token.</p>
+    </div>
+    <img class="shot" src="loan-c.png" style="width:600px;border-color:#2a3a48;box-shadow:0 18px 50px rgba(0,0,0,.4)">
+  </div>
+  <div class="foot"><span>Maadhav Sharma, Founder &amp; CEO, CodeDecoders</span><span>TOKEN2049 Origins, Singapore</span></div>
+</section>
+
+<!-- 2. Problem -->
+<section class="slide">
+  <h2>Shipped today, paid months later.</h2>
+  <div class="lane" style="margin-top:36px;max-width:900px">
+    <div class="stop"><b>Day 0</b><span>Goods ship</span></div>
+    <div class="stop"><b>60 to 180 days</b><span>The exporter waits, and still pays for the next order</span></div>
+    <div class="stop"><b>Day 90+</b><span>The buyer pays</span></div>
+  </div>
+  <div style="margin-top:70px">
+    <div class="stat">$2.5 trillion</div>
+    <p class="lede" style="margin-top:10px">Global trade finance gap in 2022. Small exporters are the ones left waiting.</p>
+    <p class="src">Source: Asian Development Bank, 2023 Trade Finance Gaps, Growth, and Jobs Survey.</p>
+  </div>
+</section>
+
+<!-- 3. What Tradeflow does -->
+<section class="slide">
+  <h2>Sell the wait to lenders.</h2>
+  <div class="lane">
+    <div class="stop"><b>Business</b><span>Asks for an advance on a confirmed invoice</span></div>
+    <div class="stop"><b>Buyer</b><span>Confirms it through a link</span></div>
+    <div class="stop"><b>Lenders</b><span>Fund by bank transfer or USDC</span></div>
+    <div class="stop"><b>Business</b><span>Is paid out in fiat</span></div>
+    <div class="stop"><b>Buyer</b><span>Pays; lenders are repaid with interest</span></div>
+  </div>
+  <div class="row" style="margin-top:56px">
+    <div class="card" style="flex:1"><h3>Exporters</h3><p>Paid when the goods ship, not months later.</p></div>
+    <div class="card" style="flex:1"><h3>Lenders</h3><p>Short, document-backed yield. The demo loans priced at 9% and 19% APR.</p></div>
+    <div class="card" style="flex:1"><h3>Tradeflow</h3><p>A fee on each advance.</p></div>
+  </div>
+</section>
+
+<!-- 4. CRE workflows -->
+<section class="slide">
+  <h2>Chainlink CRE makes every off-chain decision.</h2>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">
+    <div class="card"><h3>Listing</h3><div class="tags">HTTP trigger, confidential TEE handler, EUR/USD Data Feed</div><p>Is the document real, confirmed and creditworthy? Then list the loan and issue its token.</p></div>
+    <div class="card"><h3>Lender</h3><div class="tags">Confidential HTTP, Vault DON secret, Data Feed check</div><p>Is the lender verified? Did the bank deposit really arrive at a fair rate?</p></div>
+    <div class="card"><h3>Settlement</h3><div class="tags">EVM log triggers, two-source consensus</div><p>Pay the business once funded. Mark it repaid only when the bank and the processor agree.</p></div>
+    <div class="card"><h3>Monitor</h3><div class="tags">Cron trigger, three-way reconciliation</div><p>Late loan? Freeze the business and pause its token. Books out of balance? Pause all funding.</p></div>
+  </div>
+  <p class="caption" style="font-size:17px;margin-top:22px">Four workflows, seven handlers. Each decision lands onchain as a signed report through the CRE forwarder.</p>
+</section>
+
+<!-- 5. Confidential -->
+<section class="slide">
+  <h2>Confidential by design.</h2>
+  <div class="row" style="align-items:flex-start">
+    <div style="width:430px;flex:none">
+      <p style="font-size:15px;color:var(--muted);font-weight:600;margin-bottom:6px">Stays in the enclave (<code>handlerInTee</code>, AWS Nitro)</p>
+      <ul class="list">
+        <li>Revenue, open debts, payment history</li>
+        <li>Document registry and sanctions results</li>
+        <li>The API secret</li>
+      </ul>
+      <p style="font-size:15px;color:var(--muted);font-weight:600;margin:20px 0 6px">Only the verdict leaves</p>
+      <ul class="list"><li><strong>Grade, APR, advance and a document hash</strong></li></ul>
+    </div>
+    <div style="flex:1">
+      <img class="shot" src="terminal-c.png" style="width:100%">
+      <p class="caption">The same run in the CRE CLI: the handler requests AWS Nitro, the simulator runs it locally and says so, then the signed report lands on Ethereum Sepolia.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 6. ERC-3643 -->
+<section class="slide">
+  <h2>Every loan is an ERC-3643 token.</h2>
+  <div class="flow">
+    <div class="node hi">KYC workflow<small>CRE report</small></div><div class="arrow">&rarr;</div>
+    <div class="node">Claim issuer<small>only CRE can write</small></div><div class="arrow">&rarr;</div>
+    <div class="node">Identity registry<small>ONCHAINID per lender</small></div><div class="arrow">&rarr;</div>
+    <div class="node hi">Loan token TFN1<small>T-REX, one per loan</small></div>
+  </div>
+  <ul class="list" style="margin-top:34px;max-width:1040px">
+    <li><strong>One T-REX token per loan</strong>, deployed by the market when the listing report lands.</li>
+    <li><strong>CRE is the trusted claim issuer:</strong> a lender is verified only when the KYC workflow's report writes the claim.</li>
+    <li><strong>Only verified wallets can hold or receive notes</strong>, whether they lent by bank transfer or in USDC.</li>
+    <li><strong>A late loan's token is paused onchain</strong> until it is repaid.</li>
+  </ul>
+</section>
+
+<!-- 7. Why onchain -->
+<section class="slide">
+  <h2>Lenders do not take our word for it.</h2>
+  <div class="row" style="align-items:flex-start">
+    <ul class="list" style="flex:1">
+      <li><strong>Every decision is a signed report</strong> written onchain, with the evidence that produced it.</li>
+      <li><strong>Repayment needs two independent sources</strong> to agree: the collection bank and the payment processor.</li>
+      <li><strong>Reserves are reconciled</strong> across bank books, on-ramp mints and onchain credits. A mismatch pauses funding onchain.</li>
+      <li><strong>Double financing is blocked:</strong> a document's hash can be listed only once.</li>
+    </ul>
+    <div style="width:520px;flex:none"><img class="shot" src="ops.png" style="width:100%"><p class="caption">The bank booked a deposit that never reached the chain: the monitor paused new funding onchain.</p></div>
+  </div>
+</section>
+
+<!-- 8. Proof -->
+<section class="slide">
+  <h2>It runs on Ethereum Sepolia.</h2>
+  <div class="row" style="align-items:flex-start">
+    <div style="width:470px;flex:none">
+      <ul class="list">
+        <li>Every step of the loan lifecycle is a <code>cre workflow simulate --broadcast</code> run that writes a real Sepolia transaction.</li>
+        <li>20 contract tests, and an end-to-end test of the full lifecycle with 14 checks.</li>
+        <li>Every run's terminal output and transaction in the repo's evidence folder.</li>
+      </ul>
+      <p style="font-size:19px;font-weight:700;margin-top:22px">github.com/Maadhav/tradeflow</p>
+    </div>
+    <img class="shot" src="explorer.png" style="flex:1;width:0;min-width:0;max-width:640px">
+  </div>
+</section>
+
+<!-- 9. Next -->
+<section class="slide dark">
+  <h2 style="color:#fff">What is next.</h2>
+  <ul class="list" style="max-width:900px">
+    <li style="color:#c9d3dc;border-color:#2a3a48"><strong style="color:#fff">Deploy on the CRE network</strong> with confidential compute.</li>
+    <li style="color:#c9d3dc;border-color:#2a3a48"><strong style="color:#fff">Real bank, KYC and on-ramp partners</strong> behind the same workflows.</li>
+    <li style="color:#c9d3dc;border-color:#2a3a48"><strong style="color:#fff">More documents and trade corridors.</strong></li>
+    <li style="color:#c9d3dc;border-color:#2a3a48"><strong style="color:#fff">Secondary trading of loan tokens</strong> between verified holders.</li>
+  </ul>
+  <div style="position:absolute;left:72px;bottom:72px">
+    <div class="mark"><svg width="34" height="22" viewBox="0 0 34 22"><circle cx="5" cy="11" r="5" fill="#f2b705"/><circle cx="29" cy="11" r="4" fill="none" stroke="#fff" stroke-width="2.5"/><path d="M12 11h11" stroke="#fff" stroke-width="2.5" stroke-dasharray="3 3"/></svg>Tradeflow</div>
+    <p class="lede" style="margin-top:12px">Built by CodeDecoders, the team behind GSOS.</p>
+    <p style="margin-top:6px;color:#8a98a5;font-size:16px">Maadhav Sharma, Founder &amp; CEO</p>
+  </div>
+</section>
+
+</body>
+</html>

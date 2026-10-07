@@ -4,7 +4,7 @@
 Tradeflow
 
 ## Tagline
-Fund the goods already on their way: invoice financing where every off-chain decision runs as a Chainlink CRE workflow and settles onchain.
+Fund the goods already on their way: invoice financing where every off-chain decision runs as a Chainlink CRE workflow and every loan is an ERC-3643 token.
 
 ## Short description
 Small exporters wait 60 to 180 days to be paid for goods they have already shipped. Tradeflow lets a business request an advance on a confirmed invoice, bill of lading or equipment order. Its buyer confirms the document through a link, and lenders fund it by bank transfer or with USDC from their own wallet. The business is paid out in fiat, and when the buyer pays, lenders are repaid automatically. Every decision that depends on facts outside the chain is made by a Chainlink CRE workflow and lands onchain as a signed report:
@@ -19,18 +19,22 @@ Small exporters wait 60 to 180 days to be paid for goods they have already shipp
   - Only the grade, APR, advance amount and a document hash leave the enclave.
   - Before writing, it checks the document was not financed already. Non-USD documents are priced with the Chainlink EUR/USD Data Feed.
 - **Lender workflow:**
-  - KYC over Confidential HTTP with a Vault DON secret, which allowlists the lender's wallet for KYC-gated ERC-1155 loan notes.
+  - KYC over Confidential HTTP with a Vault DON secret, which issues the lender's ERC-3643 KYC claim and registers the wallet in the identity registry.
   - Bank-transfer deposits are verified over Confidential HTTP. The on-ramp's rate must stay within a tolerance of the Data Feed before notes are issued.
 - **Settlement workflow:**
   - An EVM log trigger on full funding instructs the fiat payout to the business.
   - The buyer's repayment is accepted only when the collection bank and the payment processor agree (node-mode consensus).
   - A second log trigger pays bank-transfer lenders back in fiat; wallet lenders claim USDC.
+- **Tokenization (ERC-3643):**
+  - Each loan is its own T-REX token (TFN1, TFN2, and so on), deployed by the market when the listing report lands.
+  - Lenders hold ONCHAINID identities in a shared ERC-3643 identity registry. CRE is the trusted claim issuer: only the KYC workflow's report can write a lender's KYC claim, so only verified wallets can hold or receive notes, whether they lent by bank transfer or in USDC.
+  - A late loan's token is paused until it is repaid.
 - **Monitor workflow (cron):**
   - Marks overdue loans Late or Defaulted and freezes the business.
   - Runs a three-way reconciliation (bank books, on-ramp mints, onchain credits). A mismatch pauses new funding onchain until an operator resumes it.
 
 ## Built with
-Chainlink CRE (TypeScript SDK; HTTP, cron and EVM log triggers; Confidential Workflows via `handlerInTee`; Confidential HTTP; consensus; EVM read and write through the CRE forwarder), the Chainlink EUR/USD Data Feed, Solidity (Foundry; ERC-1155 loan notes; the market contract as a CRE report receiver), Ethereum Sepolia, Bun, React and viem.
+Chainlink CRE (TypeScript SDK; HTTP, cron and EVM log triggers; Confidential Workflows via `handlerInTee`; Confidential HTTP; consensus; EVM read and write through the CRE forwarder), the Chainlink EUR/USD Data Feed, Solidity (Foundry; ERC-3643 T-REX and ONCHAINID; the market contract as a CRE report receiver), Ethereum Sepolia, Bun, React and viem.
 
 ## Partner technology (Chainlink CRE track)
 CRE is the orchestration layer of the whole product: four workflows, seven handlers, and every state change in the market contract arrives as a CRE report.
