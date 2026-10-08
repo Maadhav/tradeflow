@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tradeflow cards</title>
+<style>
+  @font-face { font-family: Tf; src: url("../pdf/fonts/Archivo-400.ttf") format("truetype"); font-weight: 400; }
+  @font-face { font-family: Tf; src: url("../pdf/fonts/Archivo-600.ttf") format("truetype"); font-weight: 600; }
+  @font-face { font-family: Tf; src: url("../pdf/fonts/Archivo-700.ttf") format("truetype"); font-weight: 700; }
+  @font-face { font-family: Tf; src: url("../pdf/fonts/Archivo-800.ttf") format("truetype"); font-weight: 800; }
+  @font-face { font-family: TfWide; src: url("../pdf/fonts/Archivo-800-wide.ttf") format("truetype"); font-weight: 800; }
+  :root { --ink: #14202b; --ink2: #1c2c3a; --line: #2a3a48; --soft: #c9d3dc; --muted: #8a98a5; --crane: #f2b705; --good: #6fd39a; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--ink); }
+  body { font-family: Tf, Arial, sans-serif; color: #fff; }
+  .card { width: 1280px; height: 720px; padding: 56px 64px; position: relative; overflow: hidden; background: var(--ink); }
+  .mark { display: flex; align-items: center; gap: 12px; font-family: TfWide, Tf, sans-serif; font-weight: 800; font-size: 24px; }
+  h1 { font-family: TfWide, Tf, sans-serif; font-weight: 800; letter-spacing: -1.4px; line-height: 1.02; margin: 0; }
+  .lede { font-size: 21px; line-height: 1.45; color: var(--soft); }
+  .foot { position: absolute; left: 64px; right: 64px; bottom: 34px; display: flex; justify-content: space-between; font-size: 15px; color: var(--muted); }
+  .foot b { color: #fff; font-weight: 600; }
+  .shot { border-radius: 10px; border: 1px solid var(--line); box-shadow: 0 24px 60px rgba(0, 0, 0, .45); display: block; }
+  .mono { font-family: ui-monospace, Menlo, monospace; }
+
+  /* main track */
+  .lane { display: flex; margin-top: 34px; }
+  .stop { flex: 1; position: relative; padding-top: 30px; padding-right: 14px; }
+  .stop::before { content: ""; position: absolute; top: 4px; left: 0; width: 16px; height: 16px; border-radius: 50%; background: var(--crane); }
+  .stop::after { content: ""; position: absolute; top: 11px; left: 24px; right: 6px; border-top: 2px dashed #3d4f60; }
+  .stop:last-child::after { display: none; }
+  .stop:last-child::before { background: #fff; }
+  .stop b { display: block; font-size: 13.5px; color: var(--muted); font-weight: 600; margin-bottom: 4px; }
+  .stop span { font-size: 17px; font-weight: 700; line-height: 1.25; }
+
+  /* diagrams */
+  .box { background: var(--ink2); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .box h3 { margin: 0 0 4px; font-size: 19px; font-weight: 800; font-family: TfWide, Tf, sans-serif; }
+  .box .trig { font-size: 13.5px; color: var(--crane); font-weight: 600; margin-bottom: 8px; }
+  .box p { margin: 0; font-size: 15px; line-height: 1.4; color: var(--soft); }
+  .hi { border-color: var(--crane); box-shadow: inset 0 0 0 1px var(--crane); }
+  .stats { display: flex; gap: 44px; }
+  .stat b { display: block; font-family: TfWide, Tf, sans-serif; font-size: 44px; font-weight: 800; letter-spacing: -1px; line-height: 1; }
+  .stat span { font-size: 14.5px; color: var(--muted); }
+  .arrow { color: var(--crane); font-size: 28px; font-weight: 800; }
+  .term { background: #0f1923; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; font-size: 13px; line-height: 1.6; }
+  .term .y { color: var(--crane); }
+  .term .g { color: var(--good); }
+  .chip { display: inline-block; font-size: 13px; color: var(--soft); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; margin: 4px 6px 0 0; }
+</style>
+</head>
+<body>
+
+<!-- 1. Main track -->
+<section class="card">
+  <div class="mark"><svg width="34" height="22" viewBox="0 0 34 22"><circle cx="5" cy="11" r="5" fill="#f2b705"/><circle cx="29" cy="11" r="4" fill="none" stroke="#fff" stroke-width="2.5"/><path d="M12 11h11" stroke="#fff" stroke-width="2.5" stroke-dasharray="3 3"/></svg>Tradeflow</div>
+  <h1 style="font-size:54px;margin-top:40px;white-space:nowrap">Fund the goods already on their way.</h1>
+  <div style="display:flex;gap:40px;margin-top:36px;align-items:flex-start">
+    <div style="flex:1">
+      <p class="lede">Exporters get paid the day their goods ship. Investors fund them from a bank account or a USDC wallet and are repaid when the buyer pays.</p>
+      <div class="lane" style="margin-top:40px">
+        <div class="stop"><b>Exporter</b><span>Uploads an invoice</span></div>
+        <div class="stop"><b>Buyer</b><span>Confirms it</span></div>
+        <div class="stop"><b>Investors</b><span>Fund it</span></div>
+        <div class="stop"><b>Exporter</b><span>Is paid</span></div>
+      </div>
+    </div>
+    <img class="shot" src="../pdf/portfolio.png" style="width:580px">
+  </div>
+  <div class="foot"><span><b>github.com/Maadhav/tradeflow</b></span><span>TOKEN2049 Origins, Singapore</span></div>
+</section>
+
+<!-- 2. Chainlink -->
+<section class="card">
+  <div class="mark"><svg width="34" height="22" viewBox="0 0 34 22"><circle cx="5" cy="11" r="5" fill="#f2b705"/><circle cx="29" cy="11" r="4" fill="none" stroke="#fff" stroke-width="2.5"/><path d="M12 11h11" stroke="#fff" stroke-width="2.5" stroke-dasharray="3 3"/></svg>Tradeflow</div>
+  <h1 style="font-size:50px;margin-top:44px">Every loan decision is a CRE workflow.</h1>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:40px">
+    <div class="box hi"><h3>listing</h3><div class="trig">HTTP, in a TEE</div><p>Private credit review inside the enclave, priced with the Chainlink EUR/USD feed. Deploys the loan's ERC-3643 token.</p></div>
+    <div class="box"><h3>lender</h3><div class="trig">HTTP</div><p>KYC over Confidential HTTP. Instructs the on-ramp and rejects a rate more than 1% off the feed.</p></div>
+    <div class="box"><h3>settlement</h3><div class="trig">EVM log, HTTP</div><p>Pays the business when funded. Repayment only when bank and processor agree.</p></div>
+    <div class="box"><h3>monitor</h3><div class="trig">Cron</div><p>Reconciles the books, pauses funding on a mismatch, locks late loans.</p></div>
+  </div>
+  <div style="display:flex;align-items:center;gap:16px;margin-top:22px">
+    <span class="arrow">↓</span><span style="font-size:16px;color:var(--soft)">Signed CRE reports to the market contract on Ethereum Sepolia</span>
+  </div>
+  <div style="display:flex;gap:40px;margin-top:44px;align-items:flex-end">
+    <div class="stats">
+      <div class="stat"><b>4</b><span>workflows</span></div>
+      <div class="stat"><b>7</b><span>handlers</span></div>
+      <div class="stat"><b>14</b><span>runs on Sepolia</span></div>
+    </div>
+    <div class="term mono" style="flex:1"><span class="y">Trigger requested TEE Execution: AWS Nitro in us-west-2</span><br><span class="g">[USER LOG] scorecard: grade A, approved</span><br><span class="g">[USER LOG] loan 1 listed with its own ERC-3643 token TFN1</span></div>
+  </div>
+  <div class="foot"><span><b>github.com/Maadhav/tradeflow/tree/main/evidence</b></span><span>Chainlink, Best workflow with CRE</span></div>
+</section>
+
+<!-- 3. NOWNodes -->
+<section class="card">
+  <div class="mark"><svg width="34" height="22" viewBox="0 0 34 22"><circle cx="5" cy="11" r="5" fill="#f2b705"/><circle cx="29" cy="11" r="4" fill="none" stroke="#fff" stroke-width="2.5"/><path d="M12 11h11" stroke="#fff" stroke-width="2.5" stroke-dasharray="3 3"/></svg>Tradeflow</div>
+  <h1 style="font-size:50px;margin-top:44px">Every CRE call runs through NOWNodes.</h1>
+  <div style="display:grid;grid-template-columns:1fr 60px 1fr 60px 1.25fr;align-items:center;margin-top:50px">
+    <div class="box"><h3>Chainlink CRE</h3><p style="margin-top:6px">4 workflows: listing, lender, settlement, monitor</p></div>
+    <div class="arrow" style="text-align:center">→</div>
+    <div class="box hi"><h3>NOWNodes</h3><p class="mono" style="margin-top:6px;font-size:14px">eth-sepolia.nownodes.io</p></div>
+    <div class="arrow" style="text-align:center">→</div>
+    <div class="box"><h3>Ethereum Sepolia</h3>
+      <span class="chip">Chainlink EUR/USD feed</span><span class="chip">TradeflowMarket</span><span class="chip">ERC-3643 identity registry</span><span class="chip">Loan tokens</span></div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:36px">
+    <div class="box"><div class="trig">Reads</div><p>Price feed, documents already financed, investor verification, deposits that really arrived, who holds each loan's notes.</p></div>
+    <div class="box"><div class="trig">Writes</div><p>Every signed report: listings and token deployments, KYC, funding, payouts, repayments, late-loan pauses.</p></div>
+  </div>
+  <div class="stats" style="margin-top:44px">
+    <div class="stat"><b>14</b><span>evidence runs, all through NOWNodes</span></div>
+    <div class="stat"><b>1</b><span>chain today, each trade corridor's chain next</span></div>
+  </div>
+  <div class="foot"><span><b>github.com/Maadhav/tradeflow</b></span><span>NOWNodes, Multichain Infrastructure Challenge</span></div>
+</section>
+
+</body>
+</html>
